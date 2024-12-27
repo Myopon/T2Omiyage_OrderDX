@@ -1,0 +1,110 @@
+' T2_Omiyage Miao
+' 2024年12月26日15:55:49更新
+
+Sub T2OmiyageDX1()
+     ' シートおよび変数の定義
+    Dim wsOrderSheet As Worksheet, wsGeneralLeadTime As Worksheet, wsROYLeadTime As Worksheet
+    Dim nrow As Long, generalOrderDayColumn As Integer
+    Dim orderDate As Date, productCode As String, brandCode As String
+    Dim isOrderable As Boolean, isGeneralOrderable As Boolean
+    Dim uniqueBrands As Collection, totalOrderableBrands As Long
+
+    ' シート参照を設定
+    Set wsOrderSheet = ThisWorkbook.Sheets("食品全体（原紙）")
+    Set wsGeneralLeadTime = ThisWorkbook.Sheets("一般リードタイム")
+    Set wsROYLeadTime = ThisWorkbook.Sheets("ROYリードタイム")
+
+    ' 注文日を取得
+    orderDate = wsOrderSheet.Range("T2").Value
+    generalOrderDayColumn = WorksheetFunction.Match(wsOrderSheet.Range("T3").Value, wsGeneralLeadTime.Rows(1), 0)
+
+    ' 初期値：発注可能取引先
+    Set uniqueBrands = New Collection
+
+    ' 「食品全体（原紙）」シート内の商品をループ処理
+    For nrow = 5 To wsOrderSheet.Cells(Rows.Count, "A").End(xlUp).Row
+        productCode = wsOrderSheet.Cells(nrow, "B").Value
+        brandCode = wsOrderSheet.Cells(nrow, "A").Value
+        isOrderable = True
+
+        ' ROYリードタイムの確認
+        If brandCode = "ROY" Then
+            Set foundROYCell = wsROYLeadTime.Range("B:B").Find(orderDate, LookIn:=xlValues, LookAt:=xlWhole)
+            If Not foundROYCell Is Nothing Then
+                isOrderable = (foundROYCell.Offset(0, 2).Value <> "×")
+            End If
+        Else
+            ' 一般リードタイムの確認
+            Set foundGeneralCell = wsGeneralLeadTime.Range("A:A").Find(brandCode, LookIn:=xlValues, LookAt:=xlWhole)
+            If Not foundGeneralCell Is Nothing Then
+                isGeneralOrderable = wsGeneralLeadTime.Cells(foundGeneralCell.Row, generalOrderDayColumn).Value <> "×"
+            End If
+            isOrderable = isGeneralOrderable
+        End If
+
+        ' 行の表示/非表示を設定
+        wsOrderSheet.Rows(nrow).Hidden = Not isOrderable
+        
+        ' Debug メッセージ表示
+        Debug.Print "Row " & nrow & ": ProductCode " & productCode & ", Brand " & brandCode & _
+                    ", isOrderable " & isOrderable & ", isGeneralOrderable " & isGeneralOrderable
+
+        ' 発注可能なブランドの追加
+        If isOrderable Then
+            On Error Resume Next
+            uniqueBrands.Add brandCode, brandCode
+            On Error GoTo 0
+        End If
+    Next nrow
+
+    ' 注文可能なブランドの総数
+    totalOrderableBrands = uniqueBrands.Count
+
+    ' 注文可能なブランドのリストを初期化
+    Dim orderableBrandsList As String
+    orderableBrandsList = ""
+    
+    ' 注文可能なブランドのリストを作成
+    Dim brand As Variant
+    For Each brand In uniqueBrands
+        orderableBrandsList = orderableBrandsList & brand & "、"
+    Next brand
+    
+    ' 最後のカンマを削除
+    If Len(orderableBrandsList) > 0 Then
+        orderableBrandsList = Left(orderableBrandsList, Len(orderableBrandsList) - 1)
+    End If
+    
+    ' 完了メッセージボックスの表示
+    MsgBox "本日注文可能な商品を更新しました。" & vbNewLine & _
+           "本日は合計 " & totalOrderableBrands & " 取引先が注文可能です。" & vbNewLine & _
+           "注文可能な取引先: " & orderableBrandsList, vbInformation
+
+    ' PSCとIYブランドが注文可能な場合、ユーザーにウェブサイトを開くかどうか確認
+    Dim openWeb As VbMsgBoxResult
+    If Not uniqueBrands Is Nothing Then
+        If Contains(uniqueBrands, "PSC") Then
+            openWeb = MsgBox("今日はPSCが注文可能です。WEBサイトを開きますか？", vbYesNo + vbQuestion, "PSC注文可能")
+            If openWeb = vbYes Then
+                Shell "explorer.exe https://www.chainflow2.jp/pasco1/seller/Z0001/Z0001E01.aspx", vbNormalFocus
+            End If
+        End If
+        If Contains(uniqueBrands, "BAN") Then
+            openWeb = MsgBox("今日はBANが注文可能です。WEBサイトを開きますか？", vbYesNo + vbQuestion, "BAN注文可能")
+            If openWeb = vbYes Then
+                Shell "explorer.exe https://odr.ordering.ishiya.co.jp/jlogin", vbNormalFocus
+            End If
+        End If
+    End If
+End Sub
+Function Contains(col As Collection, key As String) As Boolean
+    ' コレクションに特定のキーが含まれているかどうかを確認するための関数
+    Dim obj As Variant
+    Contains = False
+    For Each obj In col
+        If LCase(obj) = LCase(key) Then
+            Contains = True
+            Exit Function
+        End If
+    Next obj
+End Function
