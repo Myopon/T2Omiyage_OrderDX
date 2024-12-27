@@ -1,0 +1,71 @@
+Private Sub CheckBoxAM_Click()
+    UpdateDisplay CheckBoxAM.Value, CheckBoxPM.Value
+End Sub
+
+Private Sub CheckBoxPM_Click()
+    UpdateDisplay CheckBoxAM.Value, CheckBoxPM.Value
+End Sub
+
+Sub UpdateDisplay(isAMChecked As Boolean, isPMChecked As Boolean)
+    Dim wsOrderSheet As Worksheet
+    Dim wsGeneralLeadTime As Worksheet
+    Dim nrow As Long
+    Dim brandCode As String
+    Dim isOrderable As Boolean
+    Dim matchesAM As Boolean
+    Dim matchesPM As Boolean
+    Dim orderDate As Date
+    Dim generalOrderDayColumn As Integer
+    Dim foundGeneralCell As Range
+
+    ' 禁用屏幕更新和计算，加快处理速度
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ' 定义工作表
+    Set wsOrderSheet = ThisWorkbook.Sheets("食品全体（原紙）")
+    Set wsGeneralLeadTime = ThisWorkbook.Sheets("一般リードタイム")
+
+    ' 获取订单日期和列号
+    orderDate = wsOrderSheet.Range("T2").Value
+    generalOrderDayColumn = WorksheetFunction.Match(wsOrderSheet.Range("T3").Value, wsGeneralLeadTime.Rows(1), 0)
+
+    ' 遍历所有商品
+    For nrow = 5 To wsOrderSheet.Cells(wsOrderSheet.Rows.Count, "A").End(xlUp).Row
+        brandCode = wsOrderSheet.Cells(nrow, "A").Value
+        isOrderable = False
+        matchesAM = False
+        matchesPM = False
+
+        ' 检查品牌是否可订货
+        Set foundGeneralCell = wsGeneralLeadTime.Range("A:A").Find(brandCode, LookIn:=xlValues, LookAt:=xlWhole)
+        If Not foundGeneralCell Is Nothing Then
+            ' 检查是否可订货
+            If wsGeneralLeadTime.Cells(foundGeneralCell.Row, generalOrderDayColumn).Value <> "×" Then
+                isOrderable = True
+                ' 检查是否匹配 AM/PM 时间段
+                matchesAM = (wsGeneralLeadTime.Cells(foundGeneralCell.Row, 3).Value = "AM")
+                matchesPM = (wsGeneralLeadTime.Cells(foundGeneralCell.Row, 3).Value = "PM")
+            End If
+        End If
+
+        ' 根据复选框状态显示/隐藏行
+        If isAMChecked And isPMChecked Then
+            ' 显示 AM 和 PM 可订货商品
+            wsOrderSheet.Rows(nrow).Hidden = Not (matchesAM Or matchesPM)
+        ElseIf isAMChecked Then
+            ' 显示 AM 可订货商品
+            wsOrderSheet.Rows(nrow).Hidden = Not matchesAM
+        ElseIf isPMChecked Then
+            ' 显示 PM 可订货商品
+            wsOrderSheet.Rows(nrow).Hidden = Not matchesPM
+        Else
+            ' 显示所有商品（包括不可订货的商品）
+            wsOrderSheet.Rows(nrow).Hidden = False
+        End If
+    Next nrow
+
+    ' 恢复屏幕更新和计算
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+End Sub
