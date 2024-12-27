@@ -17,55 +17,81 @@ Sub UpdateDisplay(isAMChecked As Boolean, isPMChecked As Boolean)
     Dim orderDate As Date
     Dim generalOrderDayColumn As Integer
     Dim foundGeneralCell As Range
+    Dim uniqueBrands As Collection
+    Dim brandList As String
+    Dim brand As Variant
+    Dim totalBrands As Long
 
-    ' 禁用屏幕更新和计算，加快处理速度
+    ' 処理速度を向上させるため、画面更新と計算を無効化
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
 
-    ' 定义工作表
+    ' ワークシートを定義
     Set wsOrderSheet = ThisWorkbook.Sheets("食品全体（原紙）")
     Set wsGeneralLeadTime = ThisWorkbook.Sheets("一般リードタイム")
+    Set uniqueBrands = New Collection
 
-    ' 获取订单日期和列号
+    ' 受注日と列番号を取得
     orderDate = wsOrderSheet.Range("T2").Value
     generalOrderDayColumn = WorksheetFunction.Match(wsOrderSheet.Range("T3").Value, wsGeneralLeadTime.Rows(1), 0)
 
-    ' 遍历所有商品
+    ' 全商品をループ
     For nrow = 5 To wsOrderSheet.Cells(wsOrderSheet.Rows.Count, "A").End(xlUp).Row
         brandCode = wsOrderSheet.Cells(nrow, "A").Value
         isOrderable = False
         matchesAM = False
         matchesPM = False
 
-        ' 检查品牌是否可订货
+        ' ブランドが注文可能か確認
         Set foundGeneralCell = wsGeneralLeadTime.Range("A:A").Find(brandCode, LookIn:=xlValues, LookAt:=xlWhole)
         If Not foundGeneralCell Is Nothing Then
-            ' 检查是否可订货
+            ' 注文可能性を確認
             If wsGeneralLeadTime.Cells(foundGeneralCell.Row, generalOrderDayColumn).Value <> "×" Then
                 isOrderable = True
-                ' 检查是否匹配 AM/PM 时间段
+                ' AM/PMタイムスロットの一致を確認
                 matchesAM = (wsGeneralLeadTime.Cells(foundGeneralCell.Row, 3).Value = "AM")
                 matchesPM = (wsGeneralLeadTime.Cells(foundGeneralCell.Row, 3).Value = "PM")
             End If
         End If
 
-        ' 根据复选框状态显示/隐藏行
+        ' チェックボックスの状態に基づいて行を表示/非表示
         If isAMChecked And isPMChecked Then
-            ' 显示 AM 和 PM 可订货商品
+            ' AMおよびPMに一致する注文可能商品を表示
             wsOrderSheet.Rows(nrow).Hidden = Not (matchesAM Or matchesPM)
         ElseIf isAMChecked Then
-            ' 显示 AM 可订货商品
+            ' AMに一致する注文可能商品を表示
             wsOrderSheet.Rows(nrow).Hidden = Not matchesAM
         ElseIf isPMChecked Then
-            ' 显示 PM 可订货商品
+            ' PMに一致する注文可能商品を表示
             wsOrderSheet.Rows(nrow).Hidden = Not matchesPM
         Else
-            ' 显示所有商品（包括不可订货的商品）
+            ' すべての商品を表示（注文不可の商品を含む）
             wsOrderSheet.Rows(nrow).Hidden = False
+        End If
+
+        ' 注文可能なブランドを記録
+        If isOrderable And ((isAMChecked And matchesAM) Or (isPMChecked And matchesPM)) Then
+            On Error Resume Next
+            uniqueBrands.Add brandCode, brandCode ' 重複を避ける
+            On Error GoTo 0
         End If
     Next nrow
 
-    ' 恢复屏幕更新和计算
+    ' ブランド統計とリスト生成
+    totalBrands = uniqueBrands.Count
+    brandList = ""
+    For Each brand In uniqueBrands
+        brandList = brandList & brand & "、"
+    Next brand
+    If Len(brandList) > 0 Then
+        brandList = Left(brandList, Len(brandList) - 1) ' 最後の句読点を削除
+    End If
+
+    ' 統計結果を表示
+    MsgBox "AM/PM時間帯内の注文可能なブランド数: " & totalBrands & vbNewLine & _
+           "ブランド一覧: " & brandList, vbInformation, "処理完了"
+
+    ' 画面更新と計算を元に戻す
     Application.ScreenUpdating = True
     Application.Calculation = xlCalculationAutomatic
 End Sub
