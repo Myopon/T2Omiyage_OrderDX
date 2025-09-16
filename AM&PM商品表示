@@ -1,0 +1,214 @@
+'--- 全ての開いているファイルを対象に、シートを検索 ---
+Private Function FindSheetByName(sheetName As String) As Worksheet
+    Dim wb As Workbook
+    Dim sh As Worksheet
+
+    On Error Resume Next
+    ' まず ThisWorkbook を試す（マクロ格納ブックにある場合）
+    Set sh = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+    If Not sh Is Nothing Then
+        Set FindSheetByName = sh
+        Exit Function
+    End If
+
+    ' 次に全ての開いているブックを探す
+    For Each wb In Application.Workbooks
+        On Error Resume Next
+        Set sh = wb.Worksheets(sheetName)
+        On Error GoTo 0
+        If Not sh Is Nothing Then
+            Set FindSheetByName = sh
+            Exit Function
+        End If
+    Next wb
+End Function
+
+'=== 1. 全部商品を表示 ===
+Sub Show_All_Items_全商品表示()
+    Dim ws As Worksheet
+    Set ws = FindSheetByName("食品全体（原紙）")
+
+    If ws Is Nothing Then
+        MsgBox "シート '食品全体（原紙）' が見つかりません。開いているブックにシート名が存在するかご確認ください。", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    On Error Resume Next
+    ' フィルタがある場合は全表示
+    If ws.FilterMode Then ws.ShowAllData
+    ' 全行表示（AutoFilter で非表示になっている場合は上の ShowAllData で戻る）
+    ws.Cells.EntireRow.Hidden = False
+
+    ' 行高さが 0 にされている行があれば標準行高に戻す（カスタム行高は上書きされます）
+    Dim ur As Range, r As Range
+    Set ur = ws.UsedRange
+    If Not ur Is Nothing Then
+        For Each r In ur.Rows
+            If r.RowHeight <= 0.5 Then
+                r.RowHeight = ws.StandardHeight
+            End If
+        Next r
+    End If
+
+    ' 折りたたみ（アウトライン）で隠れている可能性がある場合に展開（エラー無視）
+    On Error Resume Next
+    ws.Outline.ShowLevels RowLevels:=8
+    On Error GoTo 0
+
+    Application.ScreenUpdating = True
+    MsgBox "すべての商品を表示しました。", vbInformation, "処理完了"
+End Sub
+
+'=== 2. AM発注可能商品を表示 ===
+Sub ShowAMItems_AM商品表示()
+    Call UpdateDisplayMacro(True, False)
+End Sub
+
+'=== 3. PM発注可能商品を表示 ===
+Sub ShowPMItems_PM商品表示()
+    Call UpdateDisplayMacro(False, True)
+End Sub
+
+'=== 共通処理 ===
+Private Sub UpdateDisplayMacro(isAMChecked As Boolean, isPMChecked As Boolean)
+    Dim wsOrder As Worksheet
+    Dim wsGeneral As Worksheet
+    Dim dict As Object
+    Dim uniqueBrands As Object
+    Dim lastOrderRow As Long, lastGeneralRow As Long, lastGeneralCol As Long
+    Dim arrGeneral As Variant
+    Dim i As Long, j As Long
+    Dim generalOrderDayColumn As Long
+    Dim brandCode As String
+    Dim startHideRow As Long
+    Dim currRow As Long
+    Dim info As Variant
+
+    ' シートを探す（どのブックにあるか判らなくても良い）
+    Set wsOrder = FindSheetByName("食品全体（原紙）")
+    If wsOrder Is Nothing Then
+        MsgBox "シート '食品全体（原紙）' が見つかりません。", vbExclamation
+        Exit Sub
+    End If
+
+    ' まず一般リードタイムは同じブック内を優先、なければ他ブックを検索
+    On Error Resume Next
+    Set wsGeneral = wsOrder.Parent.Worksheets("一般リードタイム")
+    On Error GoTo 0
+    If wsGeneral Is Nothing Then
+        Set wsGeneral = FindSheetByName("一般リードタイム")
+        If wsGeneral Is Nothing Then
+            MsgBox "シート '一般リードタイム' が見つかりません。", vbExclamation
+            Exit Sub
+        End If
+    End If
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ' フィルタで隠れている行があれば解除（AutoFilter）
+    On Error Resume Next
+    If wsOrder.FilterMode Then wsOrder.ShowAllData
+    On Error GoTo 0
+
+    ' 一覧から辞書を作る（ブランド -> (該当日セルの値, AM/PM 列)）
+    Set dict = CreateObject("Scripting.Dictionary")
+    lastGeneralRow = wsGeneral.Cells(wsGeneral.Rows.Count, "A").End(xlUp).Row
+    lastGeneralCol = wsGeneral.Cells(1, wsGeneral.Columns.Count).End(xlToLeft).Column
+    If lastGeneralRow < 2 Or lastGeneralCol < 1 Then
+        MsgBox "'一般リードタイム' のデータが不十分です。", vbExclamation
+        GoTo CleanUp
+    End If
+
+    arrGeneral = wsGeneral.Range(wsGeneral.Cells(1, 1), wsGeneral.Cells(lastGeneralRow, lastGeneralCol)).Value
+
+    ' ヘッダー行から該当列（T3 の日付と一致する列）を探す
+    generalOrderDayColumn = 0
+    For j = 1 To UBound(arrGeneral, 2)
+        If arrGeneral(1, j) = wsOrder.Range("T3").Value Then
+            generalOrderDayColumn = j
+            Exit For
+        End If
+    Next j
+
+    If generalOrderDayColumn = 0 Then
+        MsgBox "一般リードタイムのヘッダーに、T3 と一致する日付が見つかりません。", vbExclamation
+        GoTo CleanUp
+    End If
+
+    ' 辞書に格納（ヘッダーは 1 行目と仮定）
+    For i = 2 To UBound(arrGeneral, 1)
+        If Len(CStr(arrGeneral(i, 1))) > 0 Then
+            dict(CStr(arrGeneral(i, 1))) = Array(CStr(arrGeneral(i, generalOrderDayColumn)), CStr(arrGeneral(i, 3)))
+        End If
+    Next i
+
+    ' 対象シートの行を一度全部表示してから、ブロック単位で非表示にする
+    wsOrder.Rows.Hidden = False
+
+    lastOrderRow = wsOrder.Cells(wsOrder.Rows.Count, "A").End(xlUp).Row
+    Set uniqueBrands = CreateObject("Scripting.Dictionary")
+    startHideRow = 0
+
+    For currRow = 5 To lastOrderRow
+        brandCode = CStr(wsOrder.Cells(currRow, "A").Value)
+        Dim isOrderable As Boolean, matchesAM As Boolean, matchesPM As Boolean
+        isOrderable = False: matchesAM = False: matchesPM = False
+
+        If dict.Exists(brandCode) Then
+            info = dict(brandCode) ' info(0) = 該当日セル, info(1) = AM/PM（想定列3）
+            If info(0) <> "×" Then
+                isOrderable = True
+                matchesAM = (info(1) = "AM")
+                matchesPM = (info(1) = "PM")
+            End If
+        End If
+
+        Dim shouldShow As Boolean
+        If isAMChecked Then
+            shouldShow = matchesAM
+        ElseIf isPMChecked Then
+            shouldShow = matchesPM
+        Else
+            shouldShow = True
+        End If
+
+        If shouldShow Then
+            ' 表示対象ならブランドを収集（発注可能なもののみ）
+            If isOrderable Then
+                If Not uniqueBrands.Exists(brandCode) Then uniqueBrands.Add brandCode, brandCode
+            End If
+            ' 直前に非表示ブロックが始まっていたら閉じて一括で非表示にする
+            If startHideRow <> 0 Then
+                wsOrder.Rows(startHideRow & ":" & (currRow - 1)).Hidden = True
+                startHideRow = 0
+            End If
+        Else
+            ' 非表示にすべき行
+            If startHideRow = 0 Then startHideRow = currRow
+            ' 連続ブロックは閉じるまで処理を溜める（都度 Hidden を触らない）
+        End If
+    Next currRow
+
+    ' 最後に残った非表示ブロックがあれば閉じる
+    If startHideRow <> 0 Then
+        wsOrder.Rows(startHideRow & ":" & lastOrderRow).Hidden = True
+    End If
+
+    ' ブランド一覧作成
+    Dim brandList As String
+    If uniqueBrands.Count > 0 Then
+        brandList = Join(uniqueBrands.keys, "、")
+    Else
+        brandList = ""
+    End If
+
+    MsgBox "対象ブランド数: " & uniqueBrands.Count & vbNewLine & "ブランド一覧: " & brandList, vbInformation, "処理完了"
+
+CleanUp:
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+End Sub
+
