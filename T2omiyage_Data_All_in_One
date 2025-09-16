@@ -1,0 +1,437 @@
+' T2_Omiyage Miao
+' 2025年9月5日 13:47:41 更新
+
+Sub T2omiyage_Data_All_in_One_商品統計一括処理()
+    ' 共通変数
+    Dim wb1 As Workbook, wb2 As Workbook, wb売上 As Workbook, wb在庫 As Workbook
+    Dim ws原紙 As Worksheet, ws売上 As Worksheet, ws納品確認 As Worksheet, ws決裁表 As Worksheet, ws在庫一覧 As Worksheet
+    Dim 売上Path As String, 納品確認Path As String, 在庫Path As String
+    Dim 開始時間 As Double: 開始時間 = Timer
+    Dim val As Variant
+
+    ' --- デバッグ／エラーログ用 ---
+    Dim 処理ステップ As String, 処理詳細 As String
+    Dim logFilePath As String
+    logFilePath = Environ("TEMP") & "\T2omiyage_ErrorLog_" & Format(Now, "yyyymmdd_hhnnss") & ".txt"
+    ' -----------------------------
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    On Error GoTo エラー処理
+
+    処理ステップ = "ワークブック設定: ThisWorkbook を取得"
+    処理詳細 = ""
+    Set wb1 = ThisWorkbook
+
+    ' ↓↓↓ 売上ファイルパスをCSVに変更 ↓↓↓
+    売上Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\日別推移算出用.csv"
+    納品確認Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\【NEW】納品確認リスト.xlsm"
+    在庫Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\在庫一覧表.xlsx"
+    処理ステップ = "ファイル存在確認"
+    処理詳細 = "売上=" & 売上Path & " / 納品確認=" & 納品確認Path & " / 在庫=" & 在庫Path
+
+    If Dir(売上Path) = "" Then MsgBox "売上ファイルが見つかりません: " & 売上Path, vbCritical: GoTo 終了処理
+    If Dir(納品確認Path) = "" Then MsgBox "納品確認リストファイルが見つかりません: " & 納品確認Path, vbCritical: GoTo 終了処理
+    If Dir(在庫Path) = "" Then MsgBox "在庫一覧表ファイルが見つかりません: " & 在庫Path, vbCritical: GoTo 終了処理
+
+    処理ステップ = "ファイルオープン: 売上"
+    処理詳細 = "売上ファイルをオープンします"
+    Set wb売上 = Workbooks.Open(売上Path, ReadOnly:=True)
+
+    処理ステップ = "ファイルオープン: 納品確認"
+    処理詳細 = "納品確認ファイルをオープンします"
+    Set wb2 = Workbooks.Open(納品確認Path, ReadOnly:=True)
+
+    処理ステップ = "ファイルオープン: 在庫"
+    処理詳細 = "在庫一覧ファイルをオープンします"
+    Set wb在庫 = Workbooks.Open(在庫Path, ReadOnly:=True)
+
+    ' シート設定（存在チェックを安全に行う）
+    処理ステップ = "シート取得: 食品全体（原紙）"
+    処理詳細 = "ThisWorkbook のシートを探す"
+    On Error Resume Next
+    Set ws原紙 = wb1.Sheets("食品全体（原紙）")
+    On Error GoTo エラー処理
+    If ws原紙 Is Nothing Then
+        MsgBox "シート '食品全体（原紙）' が見つかりません。シート名を確認してください。", vbCritical
+        GoTo クローズ処理
+    End If
+    
+    ' ★★★ ここで全行を表示 ★★★
+    ws原紙.Rows.Hidden = False
+
+    処理ステップ = "売上(CSV)シート取得"
+    処理詳細 = "CSVは通常ワークシート1つなので Worksheets(1) を取得"
+    If wb売上.Worksheets.Count > 0 Then
+        Set ws売上 = wb売上.Worksheets(1)
+        If ws売上 Is Nothing Then
+            MsgBox "売上CSVファイルからワークシートを取得できませんでした。", vbCritical
+            GoTo クローズ処理
+        End If
+    Else
+        MsgBox "売上CSVファイルにワークシートが存在しません。", vbCritical
+        GoTo クローズ処理
+    End If
+
+    処理ステップ = "シート取得: 納品確認リスト"
+    処理詳細 = "納品確認シートを取得"
+    On Error Resume Next
+    Set ws納品確認 = wb2.Sheets("納品確認リスト")
+    On Error GoTo エラー処理
+    If ws納品確認 Is Nothing Then
+        MsgBox "シート '納品確認リスト' が納品確認リストファイルに見つかりません。", vbCritical
+        GoTo クローズ処理
+    End If
+
+    処理ステップ = "シート取得: 発注金額確認表"
+    処理詳細 = "ThisWorkbook の発注金額確認表を取得"
+    On Error Resume Next
+    Set ws決裁表 = wb1.Sheets("発注金額確認表")
+    On Error GoTo エラー処理
+    If ws決裁表 Is Nothing Then
+        MsgBox "シート '発注金額確認表' が見つかりません。シート名を確認してください。", vbCritical
+        GoTo クローズ処理
+    End If
+
+    処理ステップ = "在庫シート取得"
+    処理詳細 = "在庫一覧の1シート目を取得"
+    If wb在庫.Worksheets.Count > 0 Then
+        Set ws在庫一覧 = wb在庫.Worksheets(1)
+    Else
+        MsgBox "在庫一覧ファイルにワークシートが存在しません。", vbCritical
+        GoTo クローズ処理
+    End If
+
+    On Error GoTo エラー処理 ' 通常のエラー処理に戻す
+
+    ' ===== 1. 在庫データ読み込みとマッピング =====
+    処理ステップ = "在庫データ読み込み開始"
+    処理詳細 = "ws在庫一覧 をループして dict に格納"
+    Dim dict帳簿在庫 As Object: Set dict帳簿在庫 = CreateObject("Scripting.Dictionary")
+    Dim 在庫最終行 As Long: 在庫最終行 = ws在庫一覧.Cells(ws在庫一覧.Rows.Count, "D").End(xlUp).Row
+    Dim r As Long, 商品コード As String, 在庫数 As Variant
+
+    For r = 2 To 在庫最終行
+        商品コード = Trim(CStr(ws在庫一覧.Cells(r, "D").Value))
+        在庫数 = ws在庫一覧.Cells(r, "J").Value
+        If Len(商品コード) > 0 And Not IsNull(商品コード) And IsNumeric(在庫数) Then
+            dict帳簿在庫(商品コード) = CDbl(在庫数)
+        End If
+    Next r
+
+    ' ===== 2. 商品別曜日別売上平均計算 =====
+    処理ステップ = "売上データ読み込み"
+    処理詳細 = "ws売上 のデータ範囲を配列で取得"
+    Dim 最終行 As Long, 日付開始列 As Long, 日付終了列 As Long
+    Dim data範囲 As Variant, dict日付曜日 As Object, 曜日出現回数(1 To 7) As Long
+    Dim dict商品曜日売上 As Object, dict直近売上 As Object, dict在庫日数 As Object
+    Dim 区分 As String
+    Dim 売上合計 As Double, 在庫日数合計 As Long
+    Dim i As Integer, c As Long, yobi As Integer
+    Dim dict曜日売上 As Object
+
+    最終行 = ws売上.Cells(ws売上.Rows.Count, "D").End(xlUp).Row
+    日付終了列 = ws売上.Cells(1, Columns.Count).End(xlToLeft).Column
+    日付開始列 = 9 ' 固定値
+
+    If 最終行 < 1 Then 最終行 = 1
+    If 日付終了列 < 1 Then 日付終了列 = 1
+    If 日付開始列 > 日付終了列 Then
+        MsgBox "売上シートに日付データが見つかりません。または日付の列範囲が不正です。", vbExclamation
+        ' ここは必要に応じて処理を中断する
+    End If
+
+    data範囲 = ws売上.Range(ws売上.Cells(1, 1), ws売上.Cells(最終行, 日付終了列)).Value
+
+    Set dict日付曜日 = CreateObject("Scripting.Dictionary")
+    For c = 日付開始列 To 日付終了列
+        If c <= UBound(data範囲, 2) Then
+            If IsDate(data範囲(1, c)) Then
+                yobi = Weekday(CDate(data範囲(1, c)), vbMonday)
+                dict日付曜日(c) = yobi
+                曜日出現回数(yobi) = 曜日出現回数(yobi) + 1
+            End If
+        End If
+    Next c
+
+    Set dict商品曜日売上 = CreateObject("Scripting.Dictionary")
+    Set dict直近売上 = CreateObject("Scripting.Dictionary")
+    Set dict在庫日数 = CreateObject("Scripting.Dictionary")
+
+    処理ステップ = "売上配列ループ開始"
+    処理詳細 = "配列の行をループして集計"
+
+    For r = 2 To UBound(data範囲, 1)
+        商品コード = Trim(CStr(data範囲(r, 4)))
+        区分 = Trim(CStr(data範囲(r, 8)))
+
+        If Len(商品コード) = 0 Or IsNull(商品コード) Then GoTo 次r
+
+        If 区分 = "売上" Then
+            If Not dict商品曜日売上.Exists(商品コード) Then
+                Set dict曜日売上 = CreateObject("Scripting.Dictionary")
+                For i = 1 To 7: dict曜日売上(i) = 0: Next
+                Set dict商品曜日売上(商品コード) = dict曜日売上
+            Else
+                Set dict曜日売上 = dict商品曜日売上(商品コード)
+            End If
+
+            売上合計 = 0
+            For c = 日付開始列 To 日付終了列
+                If c <= UBound(data範囲, 2) Then
+                    val = data範囲(r, c)
+                    If IsNumeric(val) And Not IsNull(val) Then
+                        売上合計 = 売上合計 + CDbl(val)
+                        If dict日付曜日.Exists(c) Then
+                            yobi = dict日付曜日(c)
+                            dict曜日売上(yobi) = dict曜日売上(yobi) + CDbl(val)
+                        End If
+                    End If
+                End If
+            Next c
+            dict直近売上(商品コード) = 売上合計
+
+        ElseIf 区分 = "在庫" Then
+            在庫日数合計 = 0
+            For c = 日付開始列 To 日付終了列
+                If c <= UBound(data範囲, 2) Then
+                    val = data範囲(r, c)
+                    If IsNumeric(val) And Not IsNull(val) And CDbl(val) > 0 Then 在庫日数合計 = 在庫日数合計 + 1
+                End If
+            Next c
+            dict在庫日数(商品コード) = 在庫日数合計
+        End If
+次r:
+    Next r
+
+    ' ===== 3. 未納品集計・出力処理 =====
+    処理ステップ = "未納品集計開始"
+    処理詳細 = "食品全体（原紙）のJ列に未納品数を設定"
+
+    Dim targetColor As Long: targetColor = RGB(255, 255, 255)
+    Dim dictブランド As Object: Set dictブランド = CreateObject("Scripting.Dictionary")
+    Dim brandsOver5M As String
+    Dim lookupValue As Variant, sumResult As Double, foundRow As Variant
+    Dim lastCol As Long, nrow As Long
+    Dim lastRowSource As Long, lastRowDest As Long
+    Dim brandName As String, totalPrice As Double
+    Dim cell As Range
+
+    If ws原紙.Cells(ws原紙.Rows.Count, "B").End(xlUp).Row >= 5 Then
+        For nrow = 5 To ws原紙.Cells(ws原紙.Rows.Count, "B").End(xlUp).Row
+            If Not ws原紙.Rows(nrow).Hidden Then
+                lookupValue = ws原紙.Cells(nrow, "B").Value
+
+                If Not IsEmpty(lookupValue) And Not IsNull(lookupValue) Then
+                    foundRow = Application.Match(lookupValue, ws納品確認.Columns("B"), 0)
+
+                    If Not IsError(foundRow) Then
+                        lastCol = ws納品確認.Cells(foundRow, ws納品確認.Columns.Count).End(xlToLeft).Column
+
+                        If lastCol < 5 Then
+                            sumResult = 0
+                        Else
+                            sumResult = SumIfColor(ws納品確認.Range(ws納品確認.Cells(foundRow, 5), ws納品確認.Cells(foundRow, lastCol)), targetColor)
+                        End If
+                        ws原紙.Cells(nrow, "J").Value = sumResult
+                    Else
+                        ws原紙.Cells(nrow, "J").Value = ""
+                    End If
+                Else
+                    ws原紙.Cells(nrow, "J").Value = ""
+                End If
+            End If
+        Next nrow
+    End If
+
+    ' ブランド別金額集計
+    lastRowSource = ws原紙.Cells(ws原紙.Rows.Count, "A").End(xlUp).Row
+    If lastRowSource >= 5 Then
+        For Each cell In ws原紙.Range("A5:A" & lastRowSource)
+            If Not cell.EntireRow.Hidden Then
+                brandName = Trim(CStr(cell.Value))
+                If Len(brandName) > 0 And Not IsNull(brandName) Then
+                    Dim valOffset5 As Variant
+                    Dim valOffset18 As Variant
+                    valOffset5 = cell.Offset(0, 5).Value
+                    valOffset18 = cell.Offset(0, 18).Value
+
+                    If IsNumeric(valOffset5) And Not IsNull(valOffset5) And _
+                       IsNumeric(valOffset18) And Not IsNull(valOffset18) Then
+                        totalPrice = CDbl(valOffset5) * CDbl(valOffset18)
+                        If dictブランド.Exists(brandName) Then
+                            dictブランド(brandName) = dictブランド(brandName) + totalPrice
+                        Else
+                            dictブランド.Add brandName, totalPrice
+                        End If
+                    End If
+                End If
+            End If
+        Next cell
+    End If
+
+    ' ===== 4. 結果出力 =====
+    処理ステップ = "結果出力"
+    処理詳細 = "食品全体（原紙）へ曜日別売上等を出力"
+
+    If ws原紙.Cells(ws原紙.Rows.Count, "B").End(xlUp).Row >= 5 Then
+        For r = 5 To ws原紙.Cells(ws原紙.Rows.Count, "B").End(xlUp).Row
+            商品コード = Trim(CStr(ws原紙.Cells(r, "B").Value))
+            If Len(商品コード) = 0 Or IsNull(商品コード) Then GoTo 次出力
+
+            If dict商品曜日売上.Exists(商品コード) Then
+                Set dict曜日売上 = dict商品曜日売上(商品コード)
+                For i = 1 To 7
+                    If 曜日出現回数(i) > 0 Then
+                        ws原紙.Cells(r, 22 + i).Value = Round(dict曜日売上(i) / 曜日出現回数(i), 1)
+                    Else
+                        ws原紙.Cells(r, 22 + i).Value = ""
+                    End If
+                Next i
+            Else
+                For i = 1 To 7
+                    ws原紙.Cells(r, 22 + i).Value = ""
+                Next i
+            End If
+
+            ws原紙.Cells(r, "M").Value = IIf(dict直近売上.Exists(商品コード), dict直近売上(商品コード), "")
+            ws原紙.Cells(r, "N").Value = IIf(dict在庫日数.Exists(商品コード), dict在庫日数(商品コード), "")
+
+            If dict帳簿在庫.Exists(商品コード) Then
+                ws原紙.Cells(r, "K").Value = dict帳簿在庫(商品コード)
+            Else
+                ws原紙.Cells(r, "K").Value = 0
+            End If
+次出力:
+        Next r
+    End If
+
+    lastRowDest = ws決裁表.Cells(ws決裁表.Rows.Count, "A").End(xlUp).Row
+    If lastRowDest >= 3 Then
+        For i = 3 To lastRowDest
+            brandName = Trim(CStr(ws決裁表.Cells(i, "A").Value))
+            If Len(brandName) > 0 And Not IsNull(brandName) Then
+                If dictブランド.Exists(brandName) Then
+                    ws決裁表.Cells(i, "B").Value = dictブランド(brandName)
+                    If CDbl(dictブランド(brandName)) > 5000000 Then
+                        ws決裁表.Cells(i, "B").Interior.color = RGB(255, 0, 0)
+                        brandsOver5M = brandsOver5M & brandName & ", "
+                    Else
+                        ws決裁表.Cells(i, "B").Interior.ColorIndex = xlNone
+                    End If
+                Else
+                    ws決裁表.Cells(i, "B").Value = ""
+                    ws決裁表.Cells(i, "B").Interior.ColorIndex = xlNone
+                End If
+            Else
+                ws決裁表.Cells(i, "B").Value = ""
+                ws決裁表.Cells(i, "B").Interior.ColorIndex = xlNone
+            End If
+        Next i
+    End If
+
+クローズ処理:
+    If Not wb売上 Is Nothing Then wb売上.Close False
+    If Not wb2 Is Nothing Then wb2.Close False
+    If Not wb在庫 Is Nothing Then wb在庫.Close False
+
+終了処理:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    If Len(brandsOver5M) > 0 Then brandsOver5M = Left(brandsOver5M, Len(brandsOver5M) - 2)
+
+    MsgBox "【未納品分】【直近売上】【帳簿在庫】 集計完了！" & vbCrLf & _
+           "実行時間: " & Format(Timer - 開始時間, "0.00") & "秒" & vbCrLf & _
+           IIf(brandsOver5M <> "", "500万円超えブランド: " & brandsOver5M, ""), _
+           vbInformation, "データ集計処理"
+    Exit Sub
+
+' -------------------- エラー処理（強化版） --------------------
+エラー処理:
+    Dim errorInfo As String
+    Dim ff As Integer
+    Dim tmp As String
+
+    On Error Resume Next ' エラー処理内の追加チェックは安全に行う
+    errorInfo = "=== T2omiyage エラー情報 ===" & vbCrLf
+    errorInfo = errorInfo & "発生日時: " & Now & vbCrLf
+    errorInfo = errorInfo & "Err.Number: " & Err.Number & vbCrLf
+    errorInfo = errorInfo & "Err.Description: " & Err.Description & vbCrLf
+    errorInfo = errorInfo & "発生プロシージャ: T2omiyage_Data_All_in_One_商品統計一括処理" & vbCrLf
+    errorInfo = errorInfo & "処理ステップ: " & 処理ステップ & vbCrLf
+    If Len(処理詳細) > 0 Then errorInfo = errorInfo & "処理詳細: " & 処理詳細 & vbCrLf
+
+    errorInfo = errorInfo & vbCrLf & "【オブジェクト状態】" & vbCrLf
+    If Not wb1 Is Nothing Then tmp = wb1.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "wb1 (ThisWorkbook): " & tmp & vbCrLf
+    If Not wb売上 Is Nothing Then tmp = wb売上.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "wb売上: " & tmp & vbCrLf
+    If Not wb2 Is Nothing Then tmp = wb2.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "wb2 (納品確認): " & tmp & vbCrLf
+    If Not wb在庫 Is Nothing Then tmp = wb在庫.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "wb在庫: " & tmp & vbCrLf
+
+    If Not ws原紙 Is Nothing Then tmp = ws原紙.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "ws原紙: " & tmp & vbCrLf
+    If Not ws売上 Is Nothing Then tmp = ws売上.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "ws売上: " & tmp & vbCrLf
+    If Not ws納品確認 Is Nothing Then tmp = ws納品確認.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "ws納品確認: " & tmp & vbCrLf
+    If Not ws決裁表 Is Nothing Then tmp = ws決裁表.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "ws決裁表: " & tmp & vbCrLf
+    If Not ws在庫一覧 Is Nothing Then tmp = ws在庫一覧.Name Else tmp = "Nothing"
+    errorInfo = errorInfo & "ws在庫一覧: " & tmp & vbCrLf
+
+    errorInfo = errorInfo & vbCrLf & "【補足変数（存在すれば表示）】" & vbCrLf
+    On Error Resume Next
+    errorInfo = errorInfo & "最終行: " & 最終行 & vbCrLf
+    errorInfo = errorInfo & "日付開始列: " & 日付開始列 & vbCrLf
+    errorInfo = errorInfo & "日付終了列: " & 日付終了列 & vbCrLf
+    errorInfo = errorInfo & "在庫最終行: " & 在庫最終行 & vbCrLf
+
+    ' ログファイルへ出力
+    ff = FreeFile
+    Open logFilePath For Output As #ff
+    Print #ff, errorInfo
+    Close #ff
+
+    ' 警告メッセージ
+    Dim friendlyMsg As String
+    friendlyMsg = "エラー発生: " & Err.Description & " (番号: " & Err.Number & ")" & vbCrLf & vbCrLf
+    friendlyMsg = friendlyMsg & "発生処理: " & 処理ステップ & vbCrLf
+    friendlyMsg = friendlyMsg & "詳細ログを作成しました：" & vbCrLf & logFilePath & vbCrLf & vbCrLf
+    friendlyMsg = friendlyMsg & "よくある原因：" & vbCrLf
+    friendlyMsg = friendlyMsg & "・指定したシート名が実際の名前と一致していない" & vbCrLf
+    friendlyMsg = friendlyMsg & "・対象ファイルが開けていない（パスやアクセス権）" & vbCrLf
+    friendlyMsg = friendlyMsg & "・変数が Nothing（オブジェクトがセットされていない）" & vbCrLf & vbCrLf
+    friendlyMsg = friendlyMsg & "まずはシート名とファイルの存在、ネットワーク接続を確認してください。"
+
+    MsgBox friendlyMsg, vbCritical, "詳細エラー情報"
+
+    ' ファイルクローズを試みる（安全に）
+    Resume クローズ処理
+End Sub
+
+' -------------------- SumIfColor 関数 --------------------
+Function SumIfColor(rng As Range, color As Long) As Double
+    Dim cell As Range
+    Dim sumValue As Double
+    Dim val As Variant
+    sumValue = 0
+    If rng Is Nothing Then
+        SumIfColor = 0
+        Exit Function
+    End If
+    For Each cell In rng
+        val = cell.Value
+        If Not cell.Interior Is Nothing Then
+            If cell.Interior.color = color Then
+                If IsNumeric(val) And Not IsNull(val) Then
+                    sumValue = sumValue + CDbl(val)
+                End If
+            End If
+        End If
+    Next cell
+    SumIfColor = sumValue
+End Function
