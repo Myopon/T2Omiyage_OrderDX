@@ -1,0 +1,729 @@
+'=====================================================
+' ロット数計算 & 作成目安枚数
+' ・A列(A2～)が純粋な数字でない行は E/F を空にして非表示。計算はスキップ
+' ・想定ポイントごとに具体的なエラーメッセージを表示
+'=====================================================
+Sub ロット数計算And目安作成枚数_V1()
+    On Error GoTo ErrorHandler
+
+    Dim wsData As Worksheet, wsMaster As Worksheet, wsStock As Worksheet
+    Dim dataArr As Variant, masterArr As Variant, stockArr As Variant
+    Dim dictLot As Object, dictStock As Object
+    Dim i As Long, r As Long
+    Dim codeRaw As String, lot As Variant, stock As Variant
+    Dim fVal As Variant
+    Dim lastRow As Long, masterLastRow As Long, stockLastRow As Long
+    Dim stage As String          ' どの処理で失敗したかを記録
+    Dim invalidRow() As Boolean  ' 非表示対象フラグ
+    Dim hasValidData As Boolean  ' 有効なデータがあるかどうか
+
+    ' 速度最適化
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    Application.DisplayStatusBar = False
+
+    stage = "シート取得"
+    Set wsData = Worksheets("商品データ")
+    Set wsMaster = Worksheets("商品マスタ一覧")
+    Set wsStock = Worksheets("在庫一覧表")
+
+    stage = "最終行の取得"
+    lastRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row
+    masterLastRow = wsMaster.Cells(wsMaster.Rows.Count, "A").End(xlUp).Row
+    stockLastRow = wsStock.Cells(wsStock.Rows.Count, "D").End(xlUp).Row
+
+    If lastRow < 2 Then
+        ' A列にデータがない場合はE列とF列をクリア
+        wsData.Range("E2:F" & wsData.Rows.Count).ClearContents
+        MsgBox "【処理対象がありません】" & vbCrLf & _
+               "商品データの行が見つかりません。A2以降にデータを入力してください。", vbInformation
+        GoTo FinallyExit
+    End If
+    If masterLastRow < 5 Then
+        MsgBox "【マスタ未準備】" & vbCrLf & _
+               "「商品マスタ一覧」にデータがありません。A5以降にデータを用意してください。", vbExclamation
+        GoTo FinallyExit
+    End If
+    If stockLastRow < 5 Then
+        MsgBox "【在庫未準備】" & vbCrLf & _
+               "「在庫一覧表」にデータがありません。D5以降にデータを用意してください。", vbExclamation
+        GoTo FinallyExit
+    End If
+
+    stage = "データ一括読み込み"
+    dataArr = wsData.Range("A2:F" & lastRow).Value
+    masterArr = wsMaster.Range("A5:P" & masterLastRow).Value
+    stockArr = wsStock.Range("D5:J" & stockLastRow).Value
+    ReDim invalidRow(1 To UBound(dataArr, 1))
+
+    stage = "辞書作成（ロット）"
+    Set dictLot = CreateObject("Scripting.Dictionary")
+    dictLot.CompareMode = vbTextCompare
+    For i = 1 To UBound(masterArr, 1)
+        ' A列=商品コード, P列=ロット(16列目)
+        Dim keyLot As String
+        keyLot = CStr(masterArr(i, 1))
+        If Len(keyLot) > 0 Then
+            If IsNumeric(masterArr(i, 16)) Then
+                dictLot(keyLot) = masterArr(i, 16)
+            Else
+                dictLot(keyLot) = 0
+            End If
+        End If
+    Next i
+
+    stage = "辞書作成（在庫）"
+    Set dictStock = CreateObject("Scripting.Dictionary")
+    dictStock.CompareMode = vbTextCompare
+    For i = 1 To UBound(stockArr, 1)
+        ' D列=商品コード, J列=在庫（D起点7列目）
+        Dim keyStk As String
+        keyStk = CStr(stockArr(i, 1))
+        If Len(keyStk) > 0 Then
+            If IsNumeric(stockArr(i, 7)) Then
+                dictStock(keyStk) = stockArr(i, 7)
+            Else
+                dictStock(keyStk) = 0
+            End If
+        End If
+    Next i
+
+    '-----------------------------------------------
+    ' A列に有効な商品コードがあるかチェック
+    '-----------------------------------------------
+    hasValidData = False
+    For i = 1 To UBound(dataArr, 1)
+        codeRaw = CStr(dataArr(i, 1))
+        If Len(codeRaw) > 0 And IsPureDigits(codeRaw) Then
+            hasValidData = True
+            Exit For
+        End If
+    Next i
+    
+    If Not hasValidData Then
+        ' A列に有効な数値がない場合はE列とF列をクリア
+        wsData.Range("E2:F" & lastRow).ClearContents
+        MsgBox "【商品コードがありません】" & vbCrLf & _
+               "A列に有効な商品コードが見つかりません。" & vbCrLf & _
+               "在庫一覧表から商品コード(D列)をコピーして貼り付けてください。", vbExclamation
+        GoTo FinallyExit
+    End If
+
+'-----------------------------------------------
+' メイン計算：A列が純粋な数字でない行は E/F を空にする
+'-----------------------------------------------
+stage = "計算処理"
+For i = 1 To UBound(dataArr, 1)
+    codeRaw = CStr(dataArr(i, 1)) ' A列：商品コード（そのまま。Trimしない）
+
+    ' A列が未入力 or 純粋な数字でない → E/Fクリア
+    If Len(codeRaw) = 0 Or Not IsPureDigits(codeRaw) Then
+        dataArr(i, 5) = "" ' E列
+        dataArr(i, 6) = "" ' F列
+        GoTo SkipCalc
+    End If
+
+    ' ロット
+    If dictLot.Exists(codeRaw) Then
+        lot = dictLot(codeRaw)
+    Else
+        lot = 0
+    End If
+    dataArr(i, 5) = lot
+
+    ' 在庫
+    If dictStock.Exists(codeRaw) Then
+        stock = dictStock(codeRaw)
+    Else
+        stock = 0
+    End If
+
+    ' 作成目安枚数（在庫 ÷ ロット）
+    If IsNumeric(stock) And IsNumeric(lot) And lot <> 0 Then
+        fVal = WorksheetFunction.Round(stock / lot, 0)
+        If fVal < 0 Then fVal = 0
+    Else
+        fVal = ""
+    End If
+    dataArr(i, 6) = fVal
+
+SkipCalc:
+Next i
+
+'-----------------------------------------------
+' 書き戻し（行の非表示処理を削除）
+'-----------------------------------------------
+stage = "書き戻し"
+wsData.Rows.Hidden = False ' すべての行を表示状態に
+wsData.Range("E2").Resize(UBound(dataArr), 1).Value = Application.Index(dataArr, 0, 5)
+wsData.Range("F2").Resize(UBound(dataArr), 1).Value = Application.Index(dataArr, 0, 6)
+
+MsgBox "作成目安枚数を反映しました。" & vbCrLf & _
+       "枚数を変更したい場合は、F列の数値を編集して下さい。", vbInformation
+
+FinallyExit:
+    ' 後処理（必ず元に戻す）
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayStatusBar = True
+    Exit Sub
+
+ErrorHandler:
+    ' ステージ別の分かりやすい案内
+    Dim msg As String
+    Select Case stage
+        Case "シート取得"
+            msg = "ブック内に必要なシート（商品データ / 商品マスタ一覧 / 在庫一覧表）が見つかりません。" & vbCrLf & _
+                  "・シート名のスペルを確認してください。"
+
+        Case "最終行の取得"
+            msg = "最終行の取得でエラーが発生しました。" & vbCrLf & _
+                  "・大量の結合セルや異常な値がないかご確認ください。"
+
+        Case "データ一括読み込み"
+            msg = "範囲の読み込みに失敗しました。" & vbCrLf & _
+                  "・対象範囲（商品データ:A2:F、商品マスタ:A5:P、在庫:D5:J）を確認してください。" & vbCrLf & _
+                  "・結合セル/外部参照/数式エラー(#N/A等)が含まれていないか確認してください。"
+
+        Case "辞書作成（ロット）"
+            msg = "商品マスタ一覧のロット数作成中にエラーが発生しました。" & vbCrLf & _
+                  "・P列に数値以外が混在していないか確認してください。"
+
+        Case "辞書作成（在庫）"
+            msg = "在庫一覧表の在庫数作成中にエラーが発生しました。" & vbCrLf & _
+                  "・J列（D起点7列目）に数値以外が混在していないか確認してください。"
+
+        Case "計算処理"
+            msg = "計算中にエラーが発生しました。" & vbCrLf & _
+                  "・A列に非常に大きい値や異常値、エラー値(#N/A等)がないか確認してください。"
+
+        Case "書き戻し"
+            msg = "E列/F列への書き戻しでエラーが発生しました。" & vbCrLf & _
+                  "・シート保護、フィルタ、結合セルがないか確認してください。"
+
+        Case "行の非表示"
+            msg = "行の非表示処理でエラーが発生しました。" & vbCrLf & _
+                  "・既存のフィルタ/グループ化/アウトライン設定を確認してください。"
+
+        Case Else
+            msg = "不明な箇所でエラーが発生しました。"
+    End Select
+
+    ' 詳細（番号・内容）も最後に追記
+    msg = "【処理を中止しました】" & vbCrLf & msg & vbCrLf & vbCrLf & _
+          "＝＝＝＝ エラー情報＝＝＝＝" & vbCrLf & _
+          "エラー番号: " & Err.Number & vbCrLf & _
+          "エラー内容: " & Err.Description
+
+    MsgBox msg, vbCritical
+    Resume FinallyExit
+End Sub
+'=====================================================
+' A列の値が変更されたときにE列とF列を自動クリア＆フォント変更
+'=====================================================
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo ErrorHandler
+    
+    ' 変更されたセルがA列（A2以降）の場合のみ処理
+    If Not Intersect(Target, Me.Range("A2:A" & Me.Rows.Count)) Is Nothing Then
+        Application.EnableEvents = False ' イベントの無限ループ防止
+        
+        Dim changedCell As Range
+        For Each changedCell In Target
+            If changedCell.Row >= 2 Then ' A2以降のみ処理
+                ' フォントを「HGPｺﾞｼｯｸE」に変更
+                changedCell.Font.Name = "HGPｺﾞｼｯｸE"
+                
+                ' A列のセルが空または数字以外の場合、同じ行のE列とF列をクリア
+                If changedCell.Value = "" Or Not IsPureDigits(CStr(changedCell.Value)) Then
+                    Me.Cells(changedCell.Row, "E").Value = ""
+                    Me.Cells(changedCell.Row, "F").Value = ""
+                End If
+            End If
+        Next changedCell
+    End If
+
+FinallyExit:
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "エラーが発生しました: " & Err.Description, vbCritical
+    Resume FinallyExit
+End Sub
+
+' 純粋な数字かチェックする関数
+Private Function IsPureDigits(str As String) As Boolean
+    Dim i As Long
+    If Len(str) = 0 Then Exit Function
+    For i = 1 To Len(str)
+        If Not IsNumeric(Mid(str, i, 1)) Then
+            Exit Function
+        End If
+    Next i
+    IsPureDigits = True
+End Function
+'=============================
+' バーコード10枚レイアウト_A4サイズ
+'=============================
+Sub バーコード10枚レイアウト_A4完成版V2()
+    Dim wsData As Worksheet, wsJAN As Worksheet, ws As Worksheet
+    Dim dataArr() As Variant
+    Dim i As Long, itemCount As Long, lastRow As Long, k As Long
+    Dim t As Double: t = Timer
+    Dim printCount As Long, wsCount As Long
+    Dim hasValidData As Boolean ' 有効なデータがあるかどうかのフラグ
+
+    ' 高速モード設定
+    With Application
+        .ScreenUpdating = False
+        .Calculation = xlCalculationManual
+        .EnableEvents = False
+        .DisplayAlerts = False
+    End With
+    
+    ' シート取得
+    On Error Resume Next
+    Set wsData = Worksheets("商品データ")
+    If wsData Is Nothing Then
+        MsgBox "商品データシートが見つかりません", vbCritical
+        GoTo RestoreSettings
+    End If
+    
+    ' データを配列に一括読み込み
+    lastRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row ' A列で最終行を取得
+    If lastRow < 2 Then
+        MsgBox "商品データがありません", vbExclamation
+        GoTo RestoreSettings
+    End If
+    dataArr = wsData.Range("A2:F" & lastRow).Value
+    
+    ' A列とF列に有効なデータがあるかチェック
+    hasValidData = False
+    For i = 1 To UBound(dataArr, 1)
+        ' A列が空でなく数字のみ、かつF列が0より大きい数値、かつ非表示行でない場合
+        If Trim(dataArr(i, 1)) <> "" And IsPureDigits(CStr(dataArr(i, 1))) Then
+            If Not wsData.Rows(i + 1).Hidden Then
+                If Val(dataArr(i, 6)) > 0 Then ' F列の値が0より大きい
+                    hasValidData = True
+                    Exit For
+                End If
+            End If
+        End If
+    Next i
+    
+    ' 有効なデータがない場合は処理を中止
+    If Not hasValidData Then
+        MsgBox "生成可能なJANコードがありません" & vbCrLf & vbCrLf & _
+               "以下の項目を確認してください：" & vbCrLf & _
+               "・A列に商品コードが入力されているか" & vbCrLf & _
+               "・F列に1以上の枚数が設定されているか", vbExclamation, "確認"
+        GoTo RestoreSettings
+    End If
+    
+    ' 既存のJANシートをすべて削除
+    Application.DisplayAlerts = False
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name Like "JANシート*" Then
+            ws.Delete
+        End If
+    Next ws
+    Application.DisplayAlerts = True
+    
+    ' 最初のJANシートを作成
+    Set wsJAN = Worksheets.Add(After:=Sheets(Sheets.Count))
+    wsJAN.Name = "JANシート"
+    On Error GoTo 0
+
+    ' メイン処理
+    itemCount = 0
+    wsCount = 1
+    
+    ' 最初のシートを準備
+    Call PrepareJANSheet(wsJAN)
+    
+    For i = 1 To UBound(dataArr, 1)
+        ' A列が空の場合はスキップ（商品コードがない場合）
+        If Trim(dataArr(i, 1)) = "" Then
+            GoTo SkipRow
+        End If
+        
+        ' 非表示行をスキップ
+        If Not wsData.Rows(i + 1).Hidden Then
+            ' A列が純粋な数字か確認
+            If IsPureDigits(CStr(dataArr(i, 1))) Then
+                If Trim(dataArr(i, 3)) <> "" Then
+                    
+                    ' F列の枚数を取得（0以下の場合はスキップ）
+                    printCount = Val(dataArr(i, 6))
+                    If printCount > 0 Then
+                        
+                        ' 指定枚数分のバーコードを生成
+                        For k = 1 To printCount
+                            Dim currentRow As Long: currentRow = (itemCount Mod 5) + 1
+                            Dim currentCol As Long: currentCol = IIf(itemCount Mod 10 < 5, 1, 2)
+                            
+                            ' バーコード作成（枠線付き）- 商品名もテキストボックスで表示
+                            Call GenerateBarcodeWithFrame(wsJAN, dataArr, i, currentRow, currentCol)
+                            
+                            itemCount = itemCount + 1
+                            
+                            ' 10枚ごとに新しいシートを作成
+                            If itemCount Mod 10 = 0 And itemCount > 0 Then
+                                wsCount = wsCount + 1
+                                Set wsJAN = Worksheets.Add(After:=Worksheets(Worksheets.Count))
+                                wsJAN.Name = "JANシート(" & wsCount & ")"
+                                Call PrepareJANSheet(wsJAN)
+                            End If
+                        Next k
+                    End If
+                End If
+            End If
+        End If
+        
+SkipRow:
+    Next i
+    
+    ' バーコードが1枚も生成されなかった場合（念のための追加チェック）
+    If itemCount = 0 Then
+        ' JANシートを削除
+        Application.DisplayAlerts = False
+        For Each ws In ThisWorkbook.Worksheets
+            If ws.Name Like "JANシート*" Then
+                ws.Delete
+            End If
+        Next ws
+        Application.DisplayAlerts = True
+        
+        MsgBox "JANコードが生成されませんでした" & vbCrLf & vbCrLf & _
+               "以下の項目を確認してください：" & vbCrLf & _
+               "・A列に商品コードが入力されているか" & vbCrLf & _
+               "・F列に1以上の枚数が設定されているか" & vbCrLf & _
+               "・C列にJANコードが入力されているか", vbExclamation, "確認"
+        GoTo RestoreSettings
+    End If
+    
+    ' すべてのJANシートを改ページプレビューで表示
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name Like "JANシート*" Then
+            ws.Activate
+            ActiveWindow.View = xlPageBreakPreview
+        End If
+    Next ws
+    
+    ' 最初のシートをアクティブに
+    On Error Resume Next
+    If wsCount > 1 Then
+        Worksheets("JANシート(1)").Activate
+    ElseIf Worksheets("JANシート").Name = "JANシート" Then
+        Worksheets("JANシート").Activate
+    End If
+    On Error GoTo 0
+    
+RestoreSettings:
+    ' 設定を元に戻す
+    With Application
+        .ScreenUpdating = True
+        .Calculation = xlCalculationAutomatic
+        .EnableEvents = True
+        .DisplayAlerts = True
+    End With
+    
+    ' 結果表示
+    If itemCount > 0 Then
+        MsgBox itemCount & "件のバーコードカードを作成しました" & vbCrLf & _
+               "処理時間: " & Format(Timer - t, "0.00") & "秒", vbInformation
+    End If
+    ' 商品データシートのA1セルに戻る
+   On Error Resume Next
+   Worksheets("商品データ").Activate
+   Worksheets("商品データ").Range("A1").Select
+   On Error GoTo 0
+End Sub
+' バーコード生成（枠線付き、中央配置、商品名＋注記追加）
+Sub GenerateBarcodeWithFrame(ws As Worksheet, dataArr As Variant, i As Long, currentRow As Long, currentCol As Long)
+    Dim バーコード値 As String
+    バーコード値 = CStr(dataArr(i, 3))
+
+    ' 空白または非数値時に
+    If バーコード値 = "" Or Not IsNumeric(バーコード値) Then Exit Sub
+
+    ' 枠線の位置とサイズを定義
+    Dim frameLeft As Double: frameLeft = ws.Cells(currentRow, currentCol).Left + 50
+    Dim frameTop As Double: frameTop = ws.Cells(currentRow, currentCol).Top + 60
+    Dim frameWidth As Double: frameWidth = 240 ' JAN枠の長さ
+    Dim frameHeight As Double: frameHeight = 120 ' JAN枠の高さ
+
+    ' 枠線を作成
+    Dim frameShape As Shape
+    Set frameShape = ws.Shapes.AddShape(msoShapeRectangle, frameLeft, frameTop, frameWidth, frameHeight)
+    
+    With frameShape
+        .Fill.Visible = msoFalse ' 塗りつぶしなし
+        .Line.Weight = 2.5      ' 外枠線の太さ
+        .Line.ForeColor.RGB = RGB(0, 0, 0) ' 黒色
+        .Line.Visible = msoTrue
+        .Placement = xlMoveAndSize
+    End With
+
+    ' バーコードを枠線の中央に配置
+    Dim barcodeWidth As Double: barcodeWidth = 180 ' JANコードの長さ
+    Dim barcodeHeight As Double: barcodeHeight = 90 ' JANコードの高さ
+    Dim barcodeLeft As Double: barcodeLeft = frameLeft + (frameWidth - barcodeWidth) / 2
+    Dim barcodeTop As Double: barcodeTop = frameTop + (frameHeight - barcodeHeight) / 2
+
+    On Error Resume Next
+    Dim barcodeObj As Object
+    Set barcodeObj = ws.OLEObjects.Add( _
+        ClassType:="BARCODE.BarCodeCtrl.1", _
+        Link:=False, _
+        DisplayAsIcon:=False)
+
+    If Not barcodeObj Is Nothing Then
+        With barcodeObj
+            .Left = barcodeLeft
+            .Top = barcodeTop
+            .Width = barcodeWidth
+            .Height = barcodeHeight
+
+            Select Case Len(バーコード値)
+                Case 13
+                    .Object.Style = 2  ' JAN13
+                Case 8
+                    .Object.Style = 3  ' JAN8
+                Case Else
+                    .Object.Style = 7  ' CODE128
+            End Select
+
+            .Object.Value = バーコード値
+            On Error Resume Next
+            .Object.ShowText = False
+            On Error GoTo 0
+        End With
+    End If
+
+    ' ===== 商品名テキストボックス（枠の上） =====
+    Dim nameTop As Double: nameTop = frameTop - 30
+    Dim nameShape As Shape
+    Set nameShape = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, frameLeft, nameTop, frameWidth, 25)
+    With nameShape
+        .TextFrame2.TextRange.Text = dataArr(i, 4) ' 商品名
+        .TextFrame2.VerticalAnchor = msoAnchorMiddle
+        .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        With .TextFrame2.TextRange.Font
+            .Size = 16
+            .Bold = msoTrue
+            .Name = "Yu Gothic"
+        End With
+        .Fill.Visible = msoFalse
+        .Line.Visible = msoFalse
+    End With
+
+    ' ===== 注記テキストボックス（枠の下） =====
+    Dim noteTop As Double: noteTop = frameTop + frameHeight + 5
+    Dim noteShape As Shape
+    Set noteShape = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, frameLeft, noteTop, frameWidth, 20)
+    With noteShape
+        .TextFrame2.TextRange.Text = "単品用JANコードシールを貼付"
+        .TextFrame2.VerticalAnchor = msoAnchorMiddle
+        .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        With .TextFrame2.TextRange.Font
+            .Size = 12
+            .Bold = msoTrue
+            .Name = "Yu Gothic"
+        End With
+        .Fill.Visible = msoFalse
+        .Line.Visible = msoFalse
+    End With
+End Sub
+' シート準備用サブルーチン（行の高さを調整）
+Sub PrepareJANSheet(ws As Worksheet)
+    ' A4用紙設定
+    With ws.PageSetup
+        .PaperSize = xlPaperA4
+        .Orientation = xlPortrait
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = 1
+        .TopMargin = Application.CentimetersToPoints(1#)
+        .BottomMargin = Application.CentimetersToPoints(1#)
+        .LeftMargin = Application.CentimetersToPoints(1#)
+        .RightMargin = Application.CentimetersToPoints(1#)
+        .CenterHorizontally = True
+    End With
+    
+    ' グリッド線非表示
+    ws.Activate
+    ActiveWindow.DisplayGridlines = False
+    
+    ' カードサイズ設定
+    Dim cardWidth As Double: cardWidth = Application.CentimetersToPoints(12) ' A4カードサイズ長さ
+    Dim cardHeight As Double: cardHeight = Application.CentimetersToPoints(6.5) ' A4カードサイズ高さ
+    
+    ' 列幅と行高設定
+    ws.Columns("A:B").ColumnWidth = cardWidth / 6
+    Dim j As Long
+    For j = 1 To 5
+        ws.Rows(j).RowHeight = cardHeight + 40 ' テキストボックス用に高さを追加
+    Next j
+    
+    ' カード枠線設定
+    With ws.Range("A1:B5")
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+End Sub
+Sub DeleteAllJANSheetsV3()
+    Dim ws As Worksheet
+    Dim wsData As Worksheet
+    Dim lastRow As Long
+    
+    ' 確認メッセージ
+    If MsgBox("以下の操作を実行します：" & vbCrLf & vbCrLf & _
+              "・すべてのJANシートを削除" & vbCrLf & _
+              "・商品データシートの商品コード(A列)をクリア" & vbCrLf & vbCrLf & _
+              "よろしいですか？", vbYesNo + vbQuestion + vbDefaultButton2, "確認") <> vbYes Then
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrorHandler
+    
+    ' 高速モード設定
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    
+    ' 1. JANシートをすべて削除
+    Application.DisplayAlerts = False
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name Like "JANシート*" Then
+            ws.Delete
+        End If
+    Next ws
+    Application.DisplayAlerts = True
+    
+    ' 2. 商品データシートのA列（A2以降）をクリア
+    On Error Resume Next
+    Set wsData = Worksheets("商品データ")
+    If Not wsData Is Nothing Then
+        ' 最終行を取得
+        lastRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row
+        If lastRow >= 2 Then
+            ' A2から最終行までをクリア
+            wsData.Range("A2:A" & lastRow).ClearContents
+        End If
+        
+        ' 念のためE列とF列もクリア（A列が消えると計算結果も不要なため）
+        If lastRow >= 2 Then
+            wsData.Range("E2:F" & lastRow).ClearContents
+        End If
+        
+        ' 非表示になっている行をすべて表示
+        wsData.Rows.Hidden = False
+        
+        ' A1セルに移動
+        wsData.Activate
+        wsData.Range("A1").Select
+    Else
+        MsgBox "商品データシートが見つかりませんでした", vbExclamation
+    End If
+    On Error GoTo 0
+    
+FinallyExit:
+    ' 設定を元に戻す
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayAlerts = True
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "エラーが発生しました：" & vbCrLf & Err.Description, vbCritical
+    Resume FinallyExit
+End Sub
+Sub ShowPrintForAllJANSheets_V4()
+    Dim ws As Worksheet
+    Dim nm() As String
+    Dim i As Long, n As Long
+    Dim oldPC As Boolean
+    Dim rng As Range
+    
+    ' --- 対象シート収集 ---
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name Like "JANシート*" Then
+            n = n + 1
+            ReDim Preserve nm(1 To n)
+            nm(n) = ws.Name
+        End If
+    Next ws
+
+    If n = 0 Then
+        MsgBox "JANシートが見つかりませんでした。", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+
+    ' --- 各シートに罫線設定 ---
+    For i = 1 To n
+        Set ws = Worksheets(nm(i))
+        On Error Resume Next
+        Set rng = ws.UsedRange
+        On Error GoTo 0
+        If Not rng Is Nothing Then
+            ' 外枠：細線
+            rng.Borders(xlEdgeLeft).Weight = xlMedium
+            rng.Borders(xlEdgeRight).Weight = xlMedium
+            rng.Borders(xlEdgeTop).Weight = xlMedium
+            rng.Borders(xlEdgeBottom).Weight = xlMedium
+            
+            ' 内側線：太線
+            rng.Borders(xlInsideVertical).Weight = xlMedium
+            rng.Borders(xlInsideHorizontal).Weight = xlMedium
+        End If
+    Next i
+
+    ' --- 印刷設定を一括適用 ---
+    oldPC = Application.PrintCommunication
+    Application.PrintCommunication = False
+    For i = 1 To n
+        With Worksheets(nm(i)).PageSetup
+            .PaperSize = xlPaperA4
+            .Orientation = xlPortrait
+            .Zoom = 100   ' 固定倍率
+            .FitToPagesWide = False
+            .FitToPagesTall = False
+            .BlackAndWhite = True
+            .CenterHorizontally = True
+            .CenterVertically = True
+            ' 余白
+            .TopMargin = Application.CentimetersToPoints(0.71)
+            .BottomMargin = Application.CentimetersToPoints(0.72)
+            .LeftMargin = Application.CentimetersToPoints(0.7)
+            .RightMargin = Application.CentimetersToPoints(0.7)
+            .HeaderMargin = Application.CentimetersToPoints(0.5)
+            .FooterMargin = Application.CentimetersToPoints(0.5)
+            .PrintArea = ""
+        End With
+    Next i
+    Application.PrintCommunication = oldPC
+
+    ' --- 対象シートを同時選択 ---
+    Sheets(nm).Select
+
+    Application.ScreenUpdating = True
+
+    ' --- Backstage の印刷プレビューを開く ---
+    On Error Resume Next
+    Application.CommandBars.ExecuteMso "PrintPreviewAndPrint"
+    If Err.Number <> 0 Then
+        Err.Clear
+        Application.Dialogs(xlDialogPrint).Show
+    End If
+    On Error GoTo 0
+End Sub
+
