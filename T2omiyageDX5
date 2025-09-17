@@ -1088,5 +1088,397 @@ Function GetJapaneseWeekday(targetDate As Date) As String
         Case 7: GetJapaneseWeekday = "日"
     End Select
 End Function
+**************************************************現在使用中＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊＊
+' T2_Omiyage Miao ' 2025年09月13日 デバッグ検証版＿発注数書き込み + S列数値チェック + 日付列表示制御
+Sub T2omiyageDX5_発注数書込()
+    On Error GoTo ErrorHandler
+    
+    ' ===== 変数定義 =====
+    Dim nrow As Long, i As Long
+    Dim wb1 As Workbook, wb2 As Workbook
+    Dim sw_1 As Worksheet, sw_2 As Worksheet
+    Dim sw_generalLeadTime As Worksheet, sw_ROYLeadTime As Worksheet
+    Dim brandName As String, productCode As String
+    Dim orderDate As Date, deliveryDate As Date
+    Dim orderQuantity As Variant
+    Dim colIndex As Long
+    Dim weekdayColumn As Long, deliveryDays As Variant
+    Dim overwriteAll As Boolean, asked As Boolean
+    Dim foundROYCell As Range, foundGeneralCell As Range
+    Dim nonNumericMsg As String
+    
+    ' ===== ファイル選択 =====
+    Dim filePath As Variant
+    filePath = Application.GetOpenFilename("Excel ファイル (*.xlsm), *.xlsm")
+    If filePath = False Then
+        MsgBox "処理がキャンセルされました。", vbInformation
+        Exit Sub
+    End If
+    
+    ' ===== ワークブック設定 =====
+    Set wb1 = Workbooks.Open(filePath)
+    Set wb2 = ThisWorkbook
+    Set sw_1 = wb1.Sheets("食品全体（原紙）")
+    Set sw_2 = wb2.Sheets("納品確認リスト")
+    Set sw_generalLeadTime = wb1.Sheets("一般リードタイム")
+    Set sw_ROYLeadTime = wb1.Sheets("ROYリードタイム")
+    
+    ' T2セルの日付を安全に取得
+    If IsDate(sw_1.Range("T2").Value) Then
+        orderDate = CDate(sw_1.Range("T2").Value)
+    Else
+        MsgBox "食品全体（原紙）シートのT2セルに有効な日付を入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    ' ★★★ 全行を表示（発注数処理の前準備） ★★★
+    Application.ScreenUpdating = False
+    sw_1.Rows.Hidden = False
+    Application.ScreenUpdating = True
+
+    ' 曜日列（E列からスタート）
+    weekdayColumn = WorksheetFunction.Weekday(orderDate, 2) + 4
+    overwriteAll = False
+    asked = False
+    nonNumericMsg = ""
+    
+    ' ===== 日付列表示制御機能（発注数処理前に実行） =====
+    Call AutoUpdateDateAndHideColumns(sw_2, orderDate)
+    
+    ' ===== 各行処理 =====
+    For nrow = 5 To sw_1.Range("B" & Rows.Count).End(xlUp).Row
+        If sw_1.Rows(nrow).Hidden Then GoTo NextIteration
+        
+        brandName = sw_1.Range("A" & nrow).Value
+        productCode = sw_1.Range("B" & nrow).Value
+        orderQuantity = sw_1.Range("S" & nrow).Value
+        
+        ' ===== S列の数値チェック =====
+        If Not IsNumeric(orderQuantity) And Not IsEmpty(orderQuantity) Then
+            nonNumericMsg = nonNumericMsg & _
+                "行 " & nrow & " 商品コード=" & productCode & _
+                " → 「" & orderQuantity & "」" & vbCrLf
+            GoTo NextIteration
+        End If
+        
+        deliveryDays = "×"
+        If brandName = "ROY" Then
+            Set foundROYCell = sw_ROYLeadTime.Range("B:B").Find(orderDate, LookIn:=xlValues, LookAt:=xlWhole)
+            If Not foundROYCell Is Nothing Then
+                deliveryDays = foundROYCell.Offset(0, 2).Value
+            End If
+        Else
+            Set foundGeneralCell = sw_generalLeadTime.Columns(1).Find(brandName, LookIn:=xlValues, LookAt:=xlWhole)
+            If Not foundGeneralCell Is Nothing Then
+                deliveryDays = sw_generalLeadTime.Cells(foundGeneralCell.Row, weekdayColumn).Value
+            End If
+        End If
+        
+        ' ===== デバッグ出力 =====
+        Debug.Print "---- 行 " & nrow & " ----"
+        Debug.Print "ブランド: " & brandName
+        Debug.Print "商品コード: " & productCode
+        Debug.Print "注文数量 (値/型): "; orderQuantity; " / "; TypeName(orderQuantity)
+        Debug.Print "配達日数 (値/型): "; deliveryDays; " / "; TypeName(deliveryDays)
+        
+        ' ===== 配達日数が有効な場合のみ =====
+        If IsNumeric(deliveryDays) Then
+            If deliveryDays = 0 Then
+                deliveryDate = orderDate
+            Else
+                deliveryDate = orderDate + CLng(deliveryDays)
+            End If
+            Debug.Print "配達日: " & deliveryDate
+            
+            ' ===== 納品確認リストで商品コード検索 =====
+            Dim matchRow As Long: matchRow = 0
+            For i = 3 To sw_2.Range("B" & Rows.Count).End(xlUp).Row
+                If sw_2.Cells(i, "B").Value = productCode Then
+                    matchRow = i
+                    Exit For
+                End If
+            Next i
+            
+            ' ===== 納品日の列を検索 =====
+            colIndex = 0
+            For i = 2 To sw_2.Cells(1, Columns.Count).End(xlToLeft).Column
+                If sw_2.Cells(1, i).Value = deliveryDate Then
+                    colIndex = i
+                    Exit For
+                End If
+            Next i
+            
+            Debug.Print "納品確認リスト 行=" & matchRow & " 列=" & colIndex
+            
+            ' ===== 商品数量の更新 =====
+            If matchRow > 0 And colIndex > 0 Then
+                If Not IsEmpty(sw_2.Cells(matchRow, colIndex).Value) Then
+                    If Not asked Then
+                        Dim response As VbMsgBoxResult
+                        Dim cellAddress As String
+                        cellAddress = sw_2.Cells(matchRow, colIndex).Address(False, False)
+                        response = MsgBox("セル " & cellAddress & " に既に値があります。全て上書きしますか？", vbYesNo + vbQuestion, "確認")
+                        asked = True
+                        If response = vbYes Then
+                            overwriteAll = True
+                        Else
+                            response = MsgBox("新しい数値を既存セルに加算して更新しますか？", vbYesNo + vbQuestion, "合計更新")
+                            If response = vbYes Then
+                                sw_2.Cells(matchRow, colIndex).Value = sw_2.Cells(matchRow, colIndex).Value + orderQuantity
+                                GoTo NextIteration
+                            Else
+                                MsgBox "処理がキャンセルされました。", vbInformation
+                                Exit For
+                            End If
+                        End If
+                    End If
+                End If
+                
+                If overwriteAll Or IsEmpty(sw_2.Cells(matchRow, colIndex).Value) Then
+                    sw_2.Cells(matchRow, colIndex).Value = IIf(orderQuantity = 0, "", orderQuantity)
+                End If
+            End If
+        Else
+            Debug.Print " 配達日数が数値ではないためスキップ: " & deliveryDays
+        End If
+        
+NextIteration:
+    Next nrow
+    
+    ' ===== 数値以外の入力があれば警告 =====
+    If nonNumericMsg <> "" Then
+        MsgBox "S列に数値以外の値が見つかりました:" & vbCrLf & vbCrLf & nonNumericMsg, vbExclamation
+    End If
+    
+    ' ===== 発注数処理後に再度日付列表示制御を実行 =====
+    Call AutoUpdateDateAndHideColumns(sw_2, orderDate)
+    
+    MsgBox "発注数の処理が完了しました。", vbInformation
+    sw_2.Activate: sw_2.Range("A3").Select
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "エラー発生: " & Err.Description & vbCrLf & _
+           "行番号: " & nrow & vbCrLf & _
+           "ブランド: " & brandName & vbCrLf & _
+           "商品コード: " & productCode & vbCrLf & _
+           "注文数量=" & orderQuantity & " 型=" & TypeName(orderQuantity) & vbCrLf & _
+           "配達日数=" & deliveryDays & " 型=" & TypeName(deliveryDays), vbCritical
+    Resume Next
+End Sub
+
+' ===== 日付自動追加と列表示制御サブルーチン =====
+Sub AutoUpdateDateAndHideColumns(ws As Worksheet, baseDate As Date)
+    On Error GoTo ErrorHandler
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ' 基準日より1ヶ月前の日付を計算（削除用）
+    Dim deleteBeforeDate As Date
+    deleteBeforeDate = DateAdd("m", -1, baseDate)
+
+    ' 基準日より3日前の日付を計算（表示制御用）
+    Dim showAfterDate As Date
+    showAfterDate = baseDate - 3
+
+    ' 変数宣言
+    Dim lastCol As Long
+    Dim col As Long, i As Long, j As Long
+    Dim headerValue As Variant
+    Dim headerDate As Date
+    Dim colsToDelete As Collection
+    Dim currentDate As Date
+    Dim dateExists As Boolean
+    Dim emptyCol As Long
+    Dim lastRow As Long
+
+    Set colsToDelete = New Collection
+
+    ' ★★★ まずすべての列を表示状態にリセット ★★★
+    ws.Columns.Hidden = False
+
+    ' 最終列を取得（ワークシート参照で明示）
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' ★★★ まずD列以降の列幅を12.33に設定 ★★★
+    If lastCol >= 4 Then
+        For col = 4 To lastCol
+            ws.Columns(col).ColumnWidth = 12.33
+        Next col
+    End If
+
+    ' ★★★ 基準日1ヶ月前より古い日付列を削除（D列から開始） ★★★
+    For col = lastCol To 4 Step -1
+        headerValue = ws.Cells(1, col).Value
+
+        If Not IsEmpty(headerValue) Then
+            If IsDate(headerValue) Then
+                headerDate = CDate(headerValue)
+                If headerDate < deleteBeforeDate Then
+                    colsToDelete.Add col
+                End If
+            End If
+        End If
+    Next col
+
+    ' 削除対象の列を削除（収集順は大きい列から並んでいるためその順で削除）
+    If colsToDelete.Count > 0 Then
+        For i = 1 To colsToDelete.Count
+            ws.Columns(colsToDelete(i)).Delete
+        Next i
+    End If
+
+    ' 最終列を再取得（削除後）
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' ★★★ 列の表示/非表示を設定（D列から開始） ★★★
+    For col = 4 To lastCol
+        headerValue = ws.Cells(1, col).Value
+
+        If Not IsEmpty(headerValue) Then
+            If IsDate(headerValue) Then
+                headerDate = CDate(headerValue)
+
+                ' 年月日形式で表示
+                ws.Cells(1, col).NumberFormat = "yyyy/m/d"
+                ws.Cells(2, col).HorizontalAlignment = xlCenter
+
+                ' 基準日より3日前以降の列は表示、それ以前は非表示
+                If headerDate >= showAfterDate Then
+                    ws.Columns(col).Hidden = False
+                Else
+                    ws.Columns(col).Hidden = True
+                End If
+            Else
+                ' D列以降で日付でない列は非表示
+                ws.Columns(col).Hidden = True
+            End If
+        Else
+            ' 空の列は非表示
+            ws.Columns(col).Hidden = True
+        End If
+    Next col
+
+    ' 新しい日付の追加（baseDate以降30日分）
+    For j = 0 To 29
+        currentDate = baseDate + j
+        dateExists = False
+
+        ' 既に同じ日付の列があるかチェック（D列以降）
+        For col = 4 To lastCol
+            If Not IsEmpty(ws.Cells(1, col).Value) And IsDate(ws.Cells(1, col).Value) Then
+                If CDate(ws.Cells(1, col).Value) = currentDate Then
+                    dateExists = True
+                    Exit For
+                End If
+            End If
+        Next col
+
+        ' 同じ日付の列がなければ追加
+        If Not dateExists Then
+            emptyCol = lastCol + 1
+            If emptyCol > ws.Columns.Count Then
+                Exit For ' 列の上限を超えたら終了
+            End If
+
+            ws.Cells(1, emptyCol).Value = currentDate
+            ws.Cells(2, emptyCol).Value = GetJapaneseWeekday(currentDate)
+
+            ' 年月日形式で表示
+            ws.Cells(1, emptyCol).NumberFormat = "yyyy/m/d"
+            ws.Cells(2, emptyCol).HorizontalAlignment = xlCenter
+
+            ' 列幅を12.33に設定
+            ws.Columns(emptyCol).ColumnWidth = 12.33
+
+            ' 新しい日付列の表示設定（基準日より3日前以降なら表示）
+            If currentDate >= showAfterDate Then
+                ws.Columns(emptyCol).Hidden = False
+            Else
+                ws.Columns(emptyCol).Hidden = True
+            End If
+
+            ' 最終列を更新
+            lastCol = emptyCol
+        End If
+    Next j
+
+    ' A～C列は常に表示（絶対に非表示にしない）
+    ws.Columns("A:C").Hidden = False
+
+    ' ---------------------------
+    ' ここでテーブル（ListObject）の範囲を自動拡張する
+    ' ---------------------------
+    Dim lo As ListObject
+    Dim tableName As String
+    Dim headerRow As Long
+    Dim leftCol As Long
+    Dim newRange As Range
+
+    tableName = "納品リストTable" ' ← 必要ならここを実際のテーブル名に変更してください
+
+    On Error Resume Next
+    Set lo = ws.ListObjects(tableName)
+    On Error GoTo ErrorHandler
+
+    If lo Is Nothing Then
+        ' 指定の名前が無ければ、シート上の最初のテーブルを使う（それも無ければスキップ）
+        If ws.ListObjects.Count > 0 Then
+            Set lo = ws.ListObjects(1)
+            Debug.Print "指定テーブル名 '" & tableName & "' が見つかりません。シート上の最初のテーブル '" & lo.Name & "' を使用します。"
+        Else
+            Debug.Print "テーブルが見つかりません。テーブル拡張をスキップします。"
+        End If
+    End If
+
+    If Not lo Is Nothing Then
+        headerRow = lo.HeaderRowRange.Row
+        leftCol = lo.Range.Columns(1).Column
+        lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+
+        ' 最低範囲の保証（lastCol が leftCol より小さい場合は leftCol を使う）
+        If lastCol < leftCol Then lastCol = leftCol
+
+        Set newRange = ws.Range(ws.Cells(headerRow, leftCol), ws.Cells(lastRow, lastCol))
+        ' リサイズ（ヘッダーを含めた範囲を指定）
+        lo.Resize newRange
+        Debug.Print "テーブル '" & lo.Name & "' を " & newRange.Address(False, False) & " に拡張しました。"
+    End If
+
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+
+    ' デバッグ用メッセージ
+    Debug.Print "基準日: " & baseDate
+    Debug.Print "削除基準日（1ヶ月前）: " & deleteBeforeDate
+    Debug.Print "表示基準日（3日前）: " & showAfterDate
+    Debug.Print "処理後の最終列: " & lastCol
+    Debug.Print "削除された列数: " & colsToDelete.Count
+
+    Exit Sub
+
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    MsgBox "日付自動追加でエラーが発生しました: " & Err.Description, vbCritical
+End Sub
+
+
+' 日本語の曜日を取得する関数
+Function GetJapaneseWeekday(targetDate As Date) As String
+    Dim weekdayNum As Integer
+    weekdayNum = Weekday(targetDate, vbMonday)
+    
+    Select Case weekdayNum
+        Case 1: GetJapaneseWeekday = "月"
+        Case 2: GetJapaneseWeekday = "火"
+        Case 3: GetJapaneseWeekday = "水"
+        Case 4: GetJapaneseWeekday = "木"
+        Case 5: GetJapaneseWeekday = "金"
+        Case 6: GetJapaneseWeekday = "土"
+        Case 7: GetJapaneseWeekday = "日"
+    End Select
+End Function
 
 
