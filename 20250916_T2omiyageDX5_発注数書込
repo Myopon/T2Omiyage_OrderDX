@@ -1,3 +1,243 @@
+' T2_Omiyage Miao ' 2025年09月13日 デバッグ検証版＿
+' 発注数書き込み S列数値チェック + 日付列表示制御（修正版：ワークシート参照を明示、スライサー許可）
+
+Sub T2omiyageDX5_発注数書込()
+    On Error GoTo ErrorHandler
+    
+    ' ===== 変数定義 =====
+    Dim nrow As Long, i As Long
+    Dim wb1 As Workbook, wb2 As Workbook
+    Dim sw_1 As Worksheet, sw_2 As Worksheet
+    Dim sw_generalLeadTime As Worksheet, sw_ROYLeadTime As Worksheet
+    Dim brandName As String, productCode As String
+    Dim orderDate As Date, deliveryDate As Date
+    Dim orderQuantity As Variant
+    Dim colIndex As Long
+    Dim weekdayColumn As Long, deliveryDays As Variant
+    Dim overwriteAll As Boolean, asked As Boolean
+    Dim foundROYCell As Range, foundGeneralCell As Range
+    Dim nonNumericMsg As String
+    
+    ' ===== ファイル選択 =====
+    Dim filePath As Variant
+    filePath = Application.GetOpenFilename("Excel ファイル (*.xlsm), *.xlsm")
+    If filePath = False Then
+        MsgBox "処理がキャンセルされました。", vbInformation
+        Exit Sub
+    End If
+    
+    ' ===== ワークブック設定 =====
+    Set wb1 = Workbooks.Open(filePath)
+    Set wb2 = ThisWorkbook
+    Set sw_1 = wb1.Sheets("食品全体（原紙）")
+    Set sw_2 = wb2.Sheets("納品確認リスト")
+    Set sw_generalLeadTime = wb1.Sheets("一般リードタイム")
+    Set sw_ROYLeadTime = wb1.Sheets("ROYリードタイム")
+    
+    ' T2セルの日付を安全に取得
+    If IsDate(sw_1.Range("T2").Value) Then
+        orderDate = CDate(sw_1.Range("T2").Value)
+    Else
+        MsgBox "食品全体（原紙）シートのT2セルに有効な日付を入力してください。", vbExclamation
+        GoTo CleanExit
+    End If
+
+    ' ★★★ シート保護を解除（保護されていなくても安全） ★★★
+    On Error Resume Next
+    sw_1.Unprotect Password:="0217"
+    sw_2.Unprotect Password:="0217"
+    On Error GoTo ErrorHandler
+    
+    ' ★★★ 全行を表示（発注数処理の前準備） ★★★
+    Application.ScreenUpdating = False
+    sw_1.Rows.Hidden = False
+    Application.ScreenUpdating = True
+
+    ' 曜日列（E列からスタート）
+    weekdayColumn = WorksheetFunction.Weekday(orderDate, 2) + 4
+    overwriteAll = False
+    asked = False
+    nonNumericMsg = ""
+    
+    ' ===== 日付列表示制御機能（発注数処理前に実行） =====
+    Call AutoUpdateDateAndHideColumns(sw_2, orderDate)
+    
+    ' ===== 各行処理 =====
+    Dim lastRow_sw1 As Long
+    lastRow_sw1 = sw_1.Range("B" & sw_1.Rows.Count).End(xlUp).Row
+    
+    For nrow = 5 To lastRow_sw1
+        If sw_1.Rows(nrow).Hidden Then GoTo NextIteration
+        
+        brandName = CStr(sw_1.Range("A" & nrow).Value)
+        productCode = CStr(sw_1.Range("B" & nrow).Value)
+        orderQuantity = sw_1.Range("S" & nrow).Value
+        
+        ' ===== S列の数値チェック =====
+        If Not IsNumeric(orderQuantity) And Not IsEmpty(orderQuantity) Then
+            nonNumericMsg = nonNumericMsg & _
+                "行 " & nrow & " 商品コード=" & productCode & _
+                " → 「" & orderQuantity & "」" & vbCrLf
+            GoTo NextIteration
+        End If
+        
+        deliveryDays = "×"
+        If UCase(brandName) = "ROY" Then
+            ' ROYシートのB列で日付を検索（厳密一致）
+            Set foundROYCell = Nothing
+            On Error Resume Next
+            Set foundROYCell = sw_ROYLeadTime.Range("B:B").Find(What:=orderDate, LookIn:=xlValues, LookAt:=xlWhole)
+            On Error GoTo ErrorHandler
+            If Not foundROYCell Is Nothing Then
+                deliveryDays = foundROYCell.Offset(0, 2).Value
+            End If
+        Else
+            ' 一般リードタイムの1列目でブランド名検索
+            Set foundGeneralCell = Nothing
+            On Error Resume Next
+            Set foundGeneralCell = sw_generalLeadTime.Columns(1).Find(What:=brandName, LookIn:=xlValues, LookAt:=xlWhole)
+            On Error GoTo ErrorHandler
+            If Not foundGeneralCell Is Nothing Then
+                deliveryDays = sw_generalLeadTime.Cells(foundGeneralCell.Row, weekdayColumn).Value
+            End If
+        End If
+        
+        ' ===== デバッグ出力 =====
+        Debug.Print "---- 行 " & nrow & " ----"
+        Debug.Print "ブランド: " & brandName
+        Debug.Print "商品コード: " & productCode
+        Debug.Print "注文数量 (値/型): "; orderQuantity; " / "; TypeName(orderQuantity)
+        Debug.Print "配達日数 (値/型): "; deliveryDays; " / "; TypeName(deliveryDays)
+        
+        ' ===== 配達日数が有効な場合のみ =====
+        If IsNumeric(deliveryDays) Then
+            If CLng(deliveryDays) = 0 Then
+                deliveryDate = orderDate
+            Else
+                deliveryDate = orderDate + CLng(deliveryDays)
+            End If
+            Debug.Print "配達日: " & deliveryDate
+            
+            ' ===== 納品確認リストで商品コード検索 =====
+            Dim matchRow As Long: matchRow = 0
+            Dim lastRow_sw2 As Long
+            lastRow_sw2 = sw_2.Range("B" & sw_2.Rows.Count).End(xlUp).Row
+            For i = 3 To lastRow_sw2
+                If CStr(sw_2.Cells(i, "B").Value) = productCode Then
+                    matchRow = i
+                    Exit For
+                End If
+            Next i
+            
+            ' ===== 納品日の列を検索（1行目） =====
+            colIndex = 0
+            Dim lastCol_sw2 As Long
+            lastCol_sw2 = sw_2.Cells(1, sw_2.Columns.Count).End(xlToLeft).Column
+            For i = 2 To lastCol_sw2
+                If IsDate(sw_2.Cells(1, i).Value) Then
+                    If CDate(sw_2.Cells(1, i).Value) = deliveryDate Then
+                        colIndex = i
+                        Exit For
+                    End If
+                End If
+            Next i
+            
+            Debug.Print "納品確認リスト 行=" & matchRow & " 列=" & colIndex
+            
+            ' ===== 商品数量の更新 =====
+            If matchRow > 0 And colIndex > 0 Then
+                If Not IsEmpty(sw_2.Cells(matchRow, colIndex).Value) Then
+                    If Not asked Then
+                        Dim response As VbMsgBoxResult
+                        Dim cellAddress As String
+                        cellAddress = sw_2.Cells(matchRow, colIndex).Address(False, False)
+                        response = MsgBox("セル " & cellAddress & " に既に値があります。全て上書きしますか？", vbYesNo + vbQuestion, "確認")
+                        asked = True
+                        If response = vbYes Then
+                            overwriteAll = True
+                        Else
+                            response = MsgBox("新しい数値を既存セルに加算して更新しますか？", vbYesNo + vbQuestion, "合計更新")
+                            If response = vbYes Then
+                                sw_2.Cells(matchRow, colIndex).Value = sw_2.Cells(matchRow, colIndex).Value + orderQuantity
+                                GoTo NextIteration
+                            Else
+                                MsgBox "処理がキャンセルされました。", vbInformation
+                                Exit For
+                            End If
+                        End If
+                    End If
+                End If
+                
+                If overwriteAll Or IsEmpty(sw_2.Cells(matchRow, colIndex).Value) Then
+                    If IsNumeric(orderQuantity) Then
+                        If CLng(orderQuantity) = 0 Then
+                            sw_2.Cells(matchRow, colIndex).Value = ""
+                        Else
+                            sw_2.Cells(matchRow, colIndex).Value = orderQuantity
+                        End If
+                    Else
+                        sw_2.Cells(matchRow, colIndex).Value = IIf(orderQuantity = 0, "", orderQuantity)
+                    End If
+                End If
+            End If
+        Else
+            Debug.Print " 配達日数が数値ではないためスキップ: " & deliveryDays
+        End If
+        
+NextIteration:
+    Next nrow
+    
+    ' ===== 数値以外の入力があれば警告 =====
+    If nonNumericMsg <> "" Then
+        MsgBox "S列に数値以外の値が見つかりました:" & vbCrLf & vbCrLf & nonNumericMsg, vbExclamation
+    End If
+    
+    ' ===== 発注数処理後に再度日付列表示制御を実行 =====
+    Call AutoUpdateDateAndHideColumns(sw_2, orderDate)
+    
+    ' ===== 再保護（スライサー操作を許可） =====
+    On Error Resume Next
+    sw_1.Protect Password:="0217", _
+        UserInterfaceOnly:=True, _
+        AllowUsingPivotTables:=True
+    sw_2.Protect Password:="0217", _
+        UserInterfaceOnly:=True, _
+        AllowUsingPivotTables:=True
+    On Error GoTo ErrorHandler
+    
+    MsgBox "発注数の処理が完了しました。", vbInformation
+    sw_2.Activate: sw_2.Range("A3").Select
+
+    ' クリーン退出
+CleanExit:
+    Application.ScreenUpdating = True
+    Exit Sub
+
+ErrorHandler:
+    ' わかりやすいエラーメッセージ表示
+    MsgBox "エラー発生: " & Err.Description & vbCrLf & _
+           "（行 " & nrow & "、商品コード：" & productCode & "）" & vbCrLf & _
+           "考えられる原因：" & vbCrLf & _
+           "・対象シートが保護されたまま" & vbCrLf & _
+           "・対象ファイル/列が存在しない" & vbCrLf & _
+           "・日付の形式が不正", vbCritical, "エラー"
+    ' エラー時も再保護（可能なら）
+    On Error Resume Next
+    sw_1.Protect Password:="0217", UserInterfaceOnly:=True, AllowUsingPivotTables:=True
+    sw_2.Protect Password:="0217", UserInterfaceOnly:=True, AllowUsingPivotTables:=True
+    On Error GoTo 0
+    Application.ScreenUpdating = True
+    Resume CleanExit
+End Sub
+
+
+
+
+
+
+
+
+
 ' T2_Omiyage Miao ' 2025年09月13日 デバッグ検証版＿発注数書き込み + S列数値チェック + 日付列表示制御
 Sub T2omiyageDX5_発注数書込()
     On Error GoTo ErrorHandler
