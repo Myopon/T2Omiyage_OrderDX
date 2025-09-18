@@ -1,0 +1,416 @@
+' T2_Omiyage Miao
+' 2025年9月17日 修正版
+' 前日納品チェック + シート保護対応 + エラーメッセージ改善版
+Sub T2omiyageDX6_YesterdayItemsCheck_前日納品チェック()
+    Dim wb売上 As Workbook, wb納品確認 As Workbook
+    Dim ws原紙 As Worksheet, ws売上 As Worksheet, ws納品確認 As Worksheet
+    Dim 売上Path As String, 納品確認Path As String
+    Dim baseDate As Date, yesterday As Date
+    Dim dateColCsv As Long, dateColNouhin As Long
+    Dim csvDict As Object, nouhinDict As Object, dupDict As Object
+    Dim r As Long, col As Long
+    Dim itemCode As String, itemName As String
+    Dim csvQty As Variant, nouhinQty As Variant
+    Dim diffCount As Integer, hasMismatch As Boolean
+    Dim htmlContent As String, reportPath As String
+    Dim itemKey As Variant
+    Dim stm As Object
+    Dim dupMessage As String, hasDuplicates As Boolean
+
+    On Error GoTo エラー処理
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    ' === 初期設定 ===
+    Set ws原紙 = ThisWorkbook.Sheets("食品全体（原紙）")
+    baseDate = ws原紙.Range("T2").Value
+    yesterday = baseDate - 1
+
+    ' === ファイルパス ===
+    売上Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\日別推移算出用.csv"
+    納品確認Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\【NEW】納品確認リスト.xlsm"
+
+    ' === ファイル存在確認 ===
+    If Dir(売上Path) = "" Or Dir(納品確認Path) = "" Then
+        MsgBox "必要なファイルが見つかりません。" & vbCrLf & _
+               "・売上CSV または 納品確認リストが存在するか確認してください。", vbExclamation
+        GoTo クローズ処理
+    End If
+
+    ' === ファイルオープン ===
+    Set wb売上 = Workbooks.Open(売上Path, ReadOnly:=True)
+    Set wb納品確認 = Workbooks.Open(納品確認Path)
+    Set ws売上 = wb売上.Sheets(1)
+    Set ws納品確認 = wb納品確認.Sheets("納品確認リスト")
+
+    ' ★★★ シート保護解除 ★★★
+    On Error Resume Next
+    ws納品確認.Unprotect Password:="0217"
+    On Error GoTo エラー処理
+
+    ' === 変数初期化 ===
+    Set csvDict = CreateObject("Scripting.Dictionary")
+    Set nouhinDict = CreateObject("Scripting.Dictionary")
+    Set dupDict = CreateObject("Scripting.Dictionary")
+    diffCount = 0
+    hasMismatch = False
+    hasDuplicates = False
+    dupMessage = ""
+
+    ' === CSVの昨日列を特定 ===
+    For col = 1 To ws売上.UsedRange.Columns.Count
+        If IsDate(ws売上.Cells(1, col).Value) Then
+            If DateValue(ws売上.Cells(1, col).Value) = yesterday Then
+                dateColCsv = col: Exit For
+            End If
+        End If
+    Next
+    If dateColCsv = 0 Then MsgBox "CSVに昨日の列が見つかりません": GoTo クローズ処理
+
+    ' === CSV辞書登録（仕入）＋重複チェック ===
+    For r = 2 To ws売上.Cells(ws売上.Rows.Count, "D").End(xlUp).Row
+        If ws売上.Cells(r, "H").Value = "仕入" Then
+            itemCode = Replace(Trim(ws売上.Cells(r, "D").Value), " ", "")
+            itemName = Trim(ws売上.Cells(r, "E").Value)
+            csvQty = ws売上.Cells(r, dateColCsv).Value
+            If Len(itemCode) > 0 And IsNumeric(csvQty) Then
+                If csvDict.Exists(itemCode) Then
+                    If Not dupDict.Exists(itemCode) Then
+                        dupDict.Add itemCode, 1
+                        dupMessage = dupMessage & "CSV内で重複: " & itemCode & " (" & itemName & ")" & vbCrLf
+                        hasDuplicates = True
+                    End If
+                End If
+                csvDict(itemCode) = Array(itemName, CDbl(csvQty))
+            End If
+        End If
+    Next
+
+    ' === 納品確認リストの昨日列を特定 ===
+    For col = 1 To ws納品確認.UsedRange.Columns.Count
+        If IsDate(ws納品確認.Cells(1, col).Value) Then
+            If DateValue(ws納品確認.Cells(1, col).Value) = yesterday Then
+                dateColNouhin = col: Exit For
+            End If
+        End If
+    Next
+    If dateColNouhin = 0 Then MsgBox "納品確認リストに昨日の列が見つかりません": GoTo クローズ処理
+
+    ' === 納品確認データ処理 ===
+    Set dupDict = CreateObject("Scripting.Dictionary") ' リセット
+    For r = 3 To ws納品確認.Cells(ws納品確認.Rows.Count, "B").End(xlUp).Row
+        itemCode = Replace(Trim(ws納品確認.Cells(r, "B").Value), " ", "")
+        nouhinQty = ws納品確認.Cells(r, dateColNouhin).Value
+        If Len(itemCode) > 0 And IsNumeric(nouhinQty) Then
+            If nouhinDict.Exists(itemCode) Then
+                If Not dupDict.Exists(itemCode) Then
+                    dupDict.Add itemCode, 1
+                    dupMessage = dupMessage & "納品確認リスト内で重複: " & itemCode & vbCrLf
+                    hasDuplicates = True
+                End If
+            End If
+            nouhinDict(itemCode) = CDbl(nouhinQty)
+
+            If csvDict.Exists(itemCode) Then
+                Dim csv仕入数 As Double
+                csv仕入数 = csvDict(itemCode)(1)
+
+                If nouhinQty = csv仕入数 And nouhinQty > 0 Then
+                    ws納品確認.Cells(r, dateColNouhin).Interior.Color = RGB(255, 255, 0)
+                ElseIf nouhinQty <> csv仕入数 Then
+                    With ws納品確認.Cells(r, dateColNouhin)
+                        If Not .Comment Is Nothing Then .Comment.Delete
+                        .AddComment Text:="変更前数量: " & nouhinQty & _
+                            " (更新: " & Format(Now, "yyyy/mm/dd HH:NN") & ")"
+                    End With
+                    ws納品確認.Cells(r, dateColNouhin).Value = csv仕入数
+                    ws納品確認.Cells(r, dateColNouhin).Interior.Color = RGB(255, 255, 0)
+                End If
+            End If
+        End If
+    Next
+
+    If hasDuplicates Then
+        MsgBox "重複商品コードが見つかりました：" & vbCrLf & dupMessage, vbExclamation, "警告"
+    End If
+
+    ' === HTMLレポート作成 ===
+    htmlContent = "<html><head><meta charset='UTF-8'><title>納品不一致レポート</title>" & _
+                  "<style>body{font-family:'Meiryo';font-size:14px;" & _
+                  "background-image:url('https://www.centrair.jp/assets/img/common/logo.png');" & _
+                  "background-repeat:no-repeat;background-position:center 30px;" & _
+                  "background-size:200px auto;padding-top:180px;text-align:center;}" & _
+                  "table{border-collapse:collapse;margin:auto;}" & _
+                  "th,td{border:1px solid #888;padding:6px 12px;text-align:center;}" & _
+                  "th{background-color:#f2f2f2;}</style></head><body>" & _
+                  "<h2>納品不一致レポート（" & Format(yesterday, "yyyy年m月d日") & "）</h2>"
+
+    If hasDuplicates Then
+        htmlContent = htmlContent & "<div style='color:red;margin-bottom:20px;'><strong>注意：重複商品コードあり</strong></div>"
+    End If
+
+    htmlContent = htmlContent & "<p>生成日時: " & Format(Now, "yyyy/mm/dd HH:NN:SS") & "</p>" & _
+                  "<table><tr><th>商品コード</th><th>商品名</th><th>CSV数量</th><th>納品数量</th></tr>"
+
+    For Each itemKey In nouhinDict.keys
+        If csvDict.Exists(itemKey) Then
+            If nouhinDict(itemKey) <> csvDict(itemKey)(1) Then
+                diffCount = diffCount + 1: hasMismatch = True
+                htmlContent = htmlContent & "<tr><td>" & itemKey & "</td><td>" & _
+                              csvDict(itemKey)(0) & "</td><td>" & _
+                              csvDict(itemKey)(1) & "</td><td>" & _
+                              nouhinDict(itemKey) & "</td></tr>"
+            End If
+        End If
+    Next
+
+    htmlContent = htmlContent & "</table></body></html>"
+
+    If hasMismatch Then
+        reportPath = ThisWorkbook.Path & "\納品不一致レポート.html"
+        Set stm = CreateObject("ADODB.Stream")
+        With stm
+            .Charset = "UTF-8": .Open
+            .WriteText htmlContent
+            .SaveToFile reportPath, 2
+            .Close
+        End With
+        If MsgBox("不一致が " & diffCount & " 件ありました。" & vbCrLf & _
+                  "レポートを開きますか？", vbYesNo + vbQuestion) = vbYes Then
+            Shell "explorer.exe """ & reportPath & """", vbNormalFocus
+        End If
+    Else
+        MsgBox Format(yesterday, "yyyy/mm/dd") & " の納品データは全て一致しています", vbInformation
+    End If
+
+クローズ処理:
+    ' ★★★ シートを再保護 ★★★
+    On Error Resume Next
+    ws納品確認.Protect Password:="0217", UserInterfaceOnly:=True
+    On Error GoTo 0
+
+    If Not wb売上 Is Nothing Then wb売上.Close False
+    If Not wb納品確認 Is Nothing Then wb納品確認.Close True
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+
+エラー処理:
+    MsgBox "エラーが発生しました。" & vbCrLf & _
+           "内容：" & Err.Description & vbCrLf & _
+           "エラー番号: " & Err.Number & vbCrLf & vbCrLf & _
+           "よくある原因：" & vbCrLf & _
+           "・シートが保護されたまま" & vbCrLf & _
+           "・対象日付の列が存在しない" & vbCrLf & _
+           "・レポートファイルが開いたまま", vbCritical, "エラー詳細"
+    Resume クローズ処理
+End Sub
+
+
+
+----------------------------------------------------------------------
+
+
+
+
+Sub T2omiyageDX6_YesterdayItemsCheck_前日納品チェック()
+    Dim wb売上 As Workbook, wb納品確認 As Workbook
+    Dim ws原紙 As Worksheet, ws売上 As Worksheet, ws納品確認 As Worksheet
+    Dim 売上Path As String, 納品確認Path As String
+    Dim baseDate As Date, yesterday As Date
+    Dim dateColCsv As Long, dateColNouhin As Long
+    Dim csvDict As Object, nouhinDict As Object, dupDict As Object
+    Dim r As Long, col As Long
+    Dim itemCode As String, itemName As String
+    Dim csvQty As Variant, nouhinQty As Variant
+    Dim diffCount As Integer, hasMismatch As Boolean
+    Dim htmlContent As String, reportPath As String
+    Dim itemKey As Variant
+    Dim stm As Object
+    Dim dupMessage As String, hasDuplicates As Boolean
+
+    On Error GoTo エラー処理
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    ' 初期設定
+    Set ws原紙 = ThisWorkbook.Sheets("食品全体（原紙）")
+    baseDate = ws原紙.Range("T2").Value
+    yesterday = baseDate - 1
+
+    ' ファイルパス
+    売上Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\日別推移算出用.csv"
+    納品確認Path = "L:\各社別フォルダ\040C-PAX\●003販売サービス部（ロビー売店）ファイル移行先\1000_00店舗別\2002_01T2おみやげ館\【書式集】\★発注書★\●毎日発注●\【NEW】納品確認リスト.xlsm"
+
+    ' ファイル存在確認
+    If Dir(売上Path) = "" Or Dir(納品確認Path) = "" Then
+        MsgBox "ファイルが見つかりません", vbExclamation
+        GoTo クローズ処理
+    End If
+
+    ' ファイルオープン
+    Set wb売上 = Workbooks.Open(売上Path, ReadOnly:=True)
+    Set wb納品確認 = Workbooks.Open(納品確認Path)
+    Set ws売上 = wb売上.Sheets(1)
+    Set ws納品確認 = wb納品確認.Sheets("納品確認リスト")
+
+    Set csvDict = CreateObject("Scripting.Dictionary")
+    Set nouhinDict = CreateObject("Scripting.Dictionary")
+    Set dupDict = CreateObject("Scripting.Dictionary") ' 重複商品検出用
+    diffCount = 0
+    hasMismatch = False
+    hasDuplicates = False
+    dupMessage = ""
+
+    ' CSVの昨日列を特定
+    For col = 1 To ws売上.UsedRange.Columns.Count
+        If IsDate(ws売上.Cells(1, col).Value) Then
+            If DateValue(ws売上.Cells(1, col).Value) = yesterday Then
+                dateColCsv = col: Exit For
+            End If
+        End If
+    Next
+    If dateColCsv = 0 Then MsgBox "CSVに昨日の列が見つかりません": GoTo クローズ処理
+
+    ' CSV辞書登録（仕入）と重複チェック
+    For r = 2 To ws売上.Cells(ws売上.Rows.Count, "D").End(xlUp).Row
+        If ws売上.Cells(r, "H").Value = "仕入" Then
+            itemCode = Replace(Trim(ws売上.Cells(r, "D").Value), " ", "")
+            itemName = Trim(ws売上.Cells(r, "E").Value)
+            csvQty = ws売上.Cells(r, dateColCsv).Value
+            If Len(itemCode) > 0 And IsNumeric(csvQty) Then
+                ' 重複商品コードチェック
+                If csvDict.Exists(itemCode) Then
+                    If Not dupDict.Exists(itemCode) Then
+                        dupDict.Add itemCode, 1
+                        dupMessage = dupMessage & "CSV内で重複した商品コード: " & itemCode & " (" & itemName & ")" & vbCrLf
+                        hasDuplicates = True
+                    End If
+                End If
+                csvDict(itemCode) = Array(itemName, CDbl(csvQty))
+            End If
+        End If
+    Next
+
+    ' 納品確認の昨日列を特定
+    For col = 1 To ws納品確認.UsedRange.Columns.Count
+        If IsDate(ws納品確認.Cells(1, col).Value) Then
+            If DateValue(ws納品確認.Cells(1, col).Value) = yesterday Then
+                dateColNouhin = col: Exit For
+            End If
+        End If
+    Next
+    If dateColNouhin = 0 Then MsgBox "納品確認リストに昨日の列が見つかりません": GoTo クローズ処理
+
+    ' 納品データ処理と重複チェック
+    Set dupDict = CreateObject("Scripting.Dictionary") ' リセット
+    For r = 3 To ws納品確認.Cells(ws納品確認.Rows.Count, "B").End(xlUp).Row
+        itemCode = Replace(Trim(ws納品確認.Cells(r, "B").Value), " ", "")
+        nouhinQty = ws納品確認.Cells(r, dateColNouhin).Value
+        If Len(itemCode) > 0 And IsNumeric(nouhinQty) Then
+            ' 納品確認リスト内の重複チェック
+            If nouhinDict.Exists(itemCode) Then
+                If Not dupDict.Exists(itemCode) Then
+                    dupDict.Add itemCode, 1
+                    dupMessage = dupMessage & "重複した商品コード: " & itemCode & vbCrLf
+                    hasDuplicates = True
+                End If
+            End If
+            
+            nouhinDict(itemCode) = CDbl(nouhinQty)
+            If csvDict.Exists(itemCode) Then
+                Dim csv仕入数 As Double
+                csv仕入数 = csvDict(itemCode)(1)
+                
+                If nouhinQty = csv仕入数 And nouhinQty > 0 Then
+                    ws納品確認.Cells(r, dateColNouhin).Interior.color = RGB(255, 255, 0)
+                ElseIf nouhinQty <> csv仕入数 Then
+                    ' 元の数量をメモ（旧コメント）として残す
+                    With ws納品確認.Cells(r, dateColNouhin)
+                        If Not .Comment Is Nothing Then .Comment.Delete
+                        .AddComment Text:="変更前の数量: " & nouhinQty & " (上書き日時: " & Format(Now, "yyyy/mm/dd HH:NN") & ")"
+                    End With
+                    
+                    ' CSVの数量で上書き
+                    ws納品確認.Cells(r, dateColNouhin).Value = csv仕入数
+                    ws納品確認.Cells(r, dateColNouhin).Interior.color = RGB(255, 255, 0)
+                End If
+            End If
+        End If
+    Next
+
+    ' 重複商品がある場合は警告表示
+    If hasDuplicates Then
+        MsgBox "納品確認リスト内で重複商品コードが見つかりました：" & vbCrLf & vbCrLf & dupMessage, vbExclamation, "警告"
+    End If
+
+    ' HTMLレポート作成
+    htmlContent = "<html><head><meta charset='UTF-8'><title>納品不一致レポート</title>" & _
+                  "<style>body{font-family:'Meiryo';font-size:14px;" & _
+                  "background-image:url('https://www.centrair.jp/special/tabipro/img/img_centrair_logo.png');" & _
+                  "background-repeat:no-repeat;background-position:center 30px;" & _
+                  "background-size:200px auto;padding-top:180px;text-align:center;}" & _
+                  "table{border-collapse:collapse;margin:auto;}" & _
+                  "th,td{border:1px solid #888;padding:6px 12px;text-align:center;}" & _
+                  "th{background-color:#f2f2f2;}</style></head><body>" & _
+                  "<h2>納品不一致レポート（" & Format(yesterday, "yyyy年m月d日") & "）</h2>"
+    
+    ' 重複がある場合はレポートに表示
+    If hasDuplicates Then
+        htmlContent = htmlContent & "<div style='color:red;margin-bottom:20px;'><strong>注意：重複商品コードが検出されました</strong></div>"
+    End If
+    
+    htmlContent = htmlContent & "<p>生成日時: " & Format(Now, "yyyy/mm/dd HH:NN:SS") & "</p>" & _
+                  "<table><tr><th>商品コード</th><th>商品名</th><th>C-CUSS帳簿在庫</th><th>納品確認リスト数量</th></tr>"
+
+    ' 全ての不一致を記録（仕入数0も含む）
+    For Each itemKey In nouhinDict.keys
+        If csvDict.Exists(itemKey) Then
+            If nouhinDict(itemKey) <> csvDict(itemKey)(1) Then
+                diffCount = diffCount + 1: hasMismatch = True
+                htmlContent = htmlContent & "<tr><td>" & itemKey & "</td><td>" & _
+                              csvDict(itemKey)(0) & "</td><td>" & _
+                              csvDict(itemKey)(1) & "</td><td>" & _
+                              nouhinDict(itemKey) & "</td></tr>"
+            End If
+        End If
+    Next
+
+    htmlContent = htmlContent & "</table></body></html>"
+
+    If hasMismatch Then
+        reportPath = ThisWorkbook.Path & "\納品不一致レポート.html"
+        Set stm = CreateObject("ADODB.Stream")
+        With stm
+            .Charset = "UTF-8"
+            .Open
+            .WriteText htmlContent
+            .SaveToFile reportPath, 2
+            .Close
+        End With
+
+        If MsgBox("前日納品分チェックが完了しました。" & vbCrLf & _
+                  "不一致が " & diffCount & " 件ありました。" & vbCrLf & _
+                  "レポートを今すぐ開きますか？", vbYesNo + vbQuestion, "レポート確認") = vbYes Then
+            Shell "explorer.exe """ & reportPath & """", vbNormalFocus
+        End If
+    Else
+        MsgBox Format(yesterday, "yyyy/mm/dd") & " の納品分データは全て一致しています", vbInformation
+    End If
+
+クローズ処理:
+    If Not wb売上 Is Nothing Then wb売上.Close False
+    If Not wb納品確認 Is Nothing Then wb納品確認.Close True
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+
+エラー処理:
+    MsgBox "エラーが発生しました。" & vbCrLf & _
+           "内容：" & Err.Description & vbCrLf & _
+           "例：レポートファイルが開いたまま など" & vbCrLf & _
+           "エラー番号: " & Err.Number, vbCritical, "エラー詳細"
+    Resume クローズ処理
+End Sub
+
+
